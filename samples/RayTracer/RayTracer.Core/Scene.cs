@@ -1,4 +1,4 @@
-using System.Collections.Immutable;
+using Functional;
 
 namespace RayTracer.Core;
 
@@ -26,6 +26,6 @@ public sealed record Scene(
     ImageSpec Image,
     Camera Camera,
     Colour Background,
-    ImmutableArray<Light> Lights,
-    ImmutableArray<Sphere> Spheres,
-    ImmutableArray<Plane> Planes);
+    ValueList<Light> Lights,
+    ValueList<Sphere> Spheres,
+    ValueList<Plane> Planes);

@@ -1,4 +1,4 @@
-using System.Collections.Immutable;
+using Functional;
 using RayTracer.Core;
 
 namespace RayTracer.Tests;
@@ -25,8 +25,8 @@ internal static class Scenes
             scene => scene,
             errors => throw new InvalidOperationException(string.Join("\n", errors)));
 
-    public static ImmutableArray<SceneError> Errors(string text) =>
-        SceneParser.Parse(text).Match(_ => ImmutableArray<SceneError>.Empty, errors => errors);
+    public static ValueList<SceneError> Errors(string text) =>
+        SceneParser.Parse(text).ErrorsOrEmpty;
 
     public static Scene Empty(Colour background) => new(
         new ImageSpec(1, 1, 1),

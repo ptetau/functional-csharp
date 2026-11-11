@@ -19,7 +19,7 @@ public static class SceneParser
     private sealed record SphereItem(int Line, Vec3 Centre, double Radius, string Material) : Item(Line);
     private sealed record PlaneItem(int Line, Vec3 Normal, double Distance, string Material) : Item(Line);
 
-    public static Validation<Scene> Parse(string text) =>
+    public static Validation<SceneError, Scene> Parse(string text) =>
         Build(text.Split('\n').Select((line, index) => ParseLine(index + 1, line)).ToImmutableArray());
 
     // Lines ------------------------------------------------------------------
@@ -120,41 +120,43 @@ public static class SceneParser
 
     // The whole file ---------------------------------------------------------
 
-    private static Validation<Scene> Build(ImmutableArray<Item> items)
+    private static Validation<SceneError, Scene> Build(ImmutableArray<Item> items)
     {
         var images = items.OfType<ImageItem>().ToImmutableArray();
         var cameras = items.OfType<CameraItem>().ToImmutableArray();
         var backgrounds = items.OfType<BackgroundItem>().ToImmutableArray();
         var materials = items.OfType<MaterialItem>().ToImmutableArray();
-        var spheres = items.OfType<SphereItem>().ToImmutableArray();
-        var planes = items.OfType<PlaneItem>().ToImmutableArray();
 
-        // ToImmutableDictionary throws on a duplicate key, so keep the first of each name and report the rest.
-        var materialsByName = materials
-            .GroupBy(m => m.Material.Name)
-            .ToImmutableDictionary(g => g.Key, g => g.First().Material);
+        // A lookup never throws on a duplicate name or a missing one; the first definition wins and the rest are reported.
+        var materialsByName = materials.ToLookup(m => m.Material.Name, m => m.Material);
 
-        var errors = items.OfType<Bad>().Select(b => new SceneError(b.Line, b.Message))
+        var problems = items.OfType<Bad>().Select(b => new SceneError(b.Line, b.Message))
             .Concat(Required(items, images, "image", "image <width> <height> <samples>"))
             .Concat(Required(items, cameras, "camera", "camera <x y z> <look-at x y z> <field of view>"))
             .Concat(Duplicates(images, _ => "image"))
             .Concat(Duplicates(cameras, _ => "camera"))
             .Concat(Duplicates(backgrounds, _ => "background"))
             .Concat(Duplicates(materials, m => $"material '{m.Material.Name}'"))
-            .Concat(spheres.Where(s => !materialsByName.ContainsKey(s.Material)).Select(s => Undefined(s.Line, s.Material)))
-            .Concat(planes.Where(p => !materialsByName.ContainsKey(p.Material)).Select(p => Undefined(p.Line, p.Material)))
-            .OrderBy(e => e.Line)
-            .ToImmutableArray();
+            .ToValueList();
 
-        return errors.IsEmpty && images.FirstOrDefault() is { } image && cameras.FirstOrDefault() is { } camera
-            ? new Validation<Scene>.Valid(new Scene(
-                image.Image,
-                camera.Camera,
-                backgrounds.FirstOrDefault() is { } background ? background.Colour : Colour.Black,
-                items.OfType<LightItem>().Select(l => l.Light).ToImmutableArray(),
-                spheres.Select(s => new Sphere(s.Centre, s.Radius, materialsByName[s.Material])).ToImmutableArray(),
-                planes.Select(p => new Plane(p.Normal, p.Distance, materialsByName[p.Material])).ToImmutableArray()))
-            : new Validation<Scene>.Invalid(errors);
+        var header = problems.IsEmpty && images is [var image, ..] && cameras is [var camera, ..]
+            ? Validation.Valid<SceneError, (ImageSpec Image, Camera Camera)>((image.Image, camera.Camera))
+            : new Validation<SceneError, (ImageSpec Image, Camera Camera)>.Invalid(problems);
+        var spheres = items.OfType<SphereItem>().Traverse(s =>
+            Resolve(materialsByName, s.Line, s.Material).Map(m => new Sphere(s.Centre, s.Radius, m)));
+        var planes = items.OfType<PlaneItem>().Traverse(p =>
+            Resolve(materialsByName, p.Line, p.Material).Map(m => new Plane(p.Normal, p.Distance, m)));
+
+        return Validation.Combine(header, spheres, planes, (h, s, p) => new Scene(
+                h.Image,
+                h.Camera,
+                backgrounds is [var background, ..] ? background.Colour : Colour.Black,
+                items.OfType<LightItem>().Select(l => l.Light).ToValueList(),
+                s,
+                p))
+            .Match<Validation<SceneError, Scene>>(
+                scene => scene,
+                errors => new Validation<SceneError, Scene>.Invalid(errors.OrderBy(e => e.Line).ToValueList()));
     }
 
     // A line that tried to give the item but had an error has already been reported.
@@ -166,8 +168,14 @@ public static class SceneParser
     private static IEnumerable<SceneError> Duplicates<T>(ImmutableArray<T> found, Func<T, string> key) where T : Item =>
         found
             .GroupBy(key)
-            .SelectMany(g => g.Skip(1).Select(dup =>
-                new SceneError(dup.Line, $"{g.Key} is already defined on line {g.First().Line}")));
+            .SelectMany(g => g.ToImmutableArray() is [var first, .. var rest]
+                ? rest.Select(dup => new SceneError(dup.Line, $"{g.Key} is already defined on line {first.Line}"))
+                : []);
+
+    private static Validation<SceneError, Material> Resolve(ILookup<string, Material> materials, int line, string name) =>
+        materials[name].FirstOrDefault() is { } material
+            ? material
+            : Validation.Invalid<SceneError, Material>(Undefined(line, name));
 
     private static SceneError Undefined(int line, string material) =>
         new(line, $"material '{material}' is not defined");

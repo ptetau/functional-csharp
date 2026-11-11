@@ -19,6 +19,13 @@ public class SceneParserTests
     }
 
     [Fact]
+    public void Parsing_the_same_text_twice_gives_equal_results()
+    {
+        Assert.Equal(SceneParser.Parse(Scenes.Sample), SceneParser.Parse(Scenes.Sample));
+        Assert.Equal(SceneParser.Parse("cube"), SceneParser.Parse("cube"));
+    }
+
+    [Fact]
     public void R1_items_may_appear_in_any_order()
     {
         var reversed = string.Join("\n", Scenes.Sample.Split('\n').Reverse());

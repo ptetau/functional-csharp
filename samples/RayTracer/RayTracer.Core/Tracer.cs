@@ -25,7 +25,8 @@ public static class Tracer
     /// <summary>Lambert shading summed over the lights that can see the point, plus ambient (R-5, R-6).</summary>
     public static Colour Diffuse(Scene scene, Hit hit) =>
         // Static lambda with the scene and hit in the accumulator: no closure per shaded point.
-        scene.Lights.Aggregate(
+        // .Items gives ImmutableArray's own Aggregate: no boxed ValueList or enumerator (see Intersection).
+        scene.Lights.Items.Aggregate(
             (Sum: hit.Material.Colour * Ambient, Scene: scene, Hit: hit),
             static (acc, light) => (acc.Sum + Lambert(acc.Scene, acc.Hit, light), acc.Scene, acc.Hit))
         .Sum;

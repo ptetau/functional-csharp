@@ -13,11 +13,14 @@ public static class Intersection
     // but its closures and enumerators cost ~536 bytes and ~600 ns per call against ~30 ns of maths.
     // ImmutableArray's own Aggregate has no enumerator, and a static lambda carrying the ray in the
     // accumulator allocates nothing.
+    // The scene's lists are ValueList (for value equality), so go through .Items: on the ValueList itself,
+    // Aggregate binds to Enumerable.Aggregate, which boxes the struct and allocates an enumerator per call
+    // (160 B per Nearest, 92 MB per sample render, ~30% slower).
 
     /// <summary>The nearest hit in front of the ray's origin, or null if it hits nothing (R-4).</summary>
     public static Hit? Nearest(Scene scene, Ray ray) =>
-        scene.Planes.Aggregate(
-            scene.Spheres.Aggregate(
+        scene.Planes.Items.Aggregate(
+            scene.Spheres.Items.Aggregate(
                 (Best: (Hit?)null, Ray: ray),
                 static (acc, sphere) => (Closer(acc.Best, Sphere(sphere, acc.Ray)), acc.Ray)),
             static (acc, plane) => (Closer(acc.Best, Plane(plane, acc.Ray)), acc.Ray))
@@ -25,8 +28,8 @@ public static class Intersection
 
     /// <summary>Whether anything lies between a point and a light (R-6).</summary>
     public static bool Blocked(Scene scene, Ray towardsLight, double lightDistance) =>
-        scene.Planes.Aggregate(
-            scene.Spheres.Aggregate(
+        scene.Planes.Items.Aggregate(
+            scene.Spheres.Items.Aggregate(
                 (Blocked: false, Ray: towardsLight, Distance: lightDistance),
                 static (acc, sphere) => (acc.Blocked || Sphere(sphere, acc.Ray) is { } hit && hit.Distance < acc.Distance, acc.Ray, acc.Distance)),
             static (acc, plane) => (acc.Blocked || Plane(plane, acc.Ray) is { } hit && hit.Distance < acc.Distance, acc.Ray, acc.Distance))
