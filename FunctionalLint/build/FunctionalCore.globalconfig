@@ -1,0 +1,11 @@
+is_global = true
+# Lowest priority, so a project's own .globalconfig or .editorconfig can change any of these.
+global_level = -1
+
+# Culture is a hidden input, like the clock: the same code formats 3117.60 as "3117,60" on a German machine.
+# These .NET analyzers make every culture-sensitive call say which culture it means.
+dotnet_diagnostic.CA1304.severity = error   # Specify CultureInfo
+dotnet_diagnostic.CA1305.severity = error   # Specify IFormatProvider
+dotnet_diagnostic.CA1309.severity = error   # Use ordinal StringComparison
+dotnet_diagnostic.CA1310.severity = error   # Specify StringComparison for correctness
+dotnet_diagnostic.CA1311.severity = error   # Specify a culture or use an invariant version (ToLower/ToUpper)

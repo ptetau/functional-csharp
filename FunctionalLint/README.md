@@ -61,9 +61,10 @@ Import the shared props file into each functional core project:
 <Import Project="..\FunctionalLint\build\FunctionalCore.props" />
 ```
 
-The props file does four things:
+The props file:
 - Adds the analyzer and its code fixes.
-- Turns on nullable reference types and makes nullable warnings errors.
+- Turns on nullable reference types and makes every warning an error. Rules you deliberately lower to warnings (FunctionalLint's and the culture rules) stay warnings.
+- Turns on the .NET culture rules (CA1304, CA1305, CA1309, CA1310, CA1311) as errors, from `FunctionalCore.globalconfig`. Culture is a hidden input like the clock: `amount.ToString("0.00")` prints `3117,60` on a German machine.
 - Makes non-exhaustive switch expressions (CS8509) errors, so a switch over a `closed` type, a `union` or an enum must handle every case.
 - Loads `functional.globalconfig`, where you set the legacy namespaces and any extra side-effecting APIs.
 

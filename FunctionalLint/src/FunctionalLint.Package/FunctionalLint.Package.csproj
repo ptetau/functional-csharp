@@ -28,6 +28,7 @@
 
   <ItemGroup>
     <None Include="..\..\build\FunctionalCore.Settings.props" Pack="true" PackagePath="build\FunctionalLint.props" />
+    <None Include="..\..\build\FunctionalCore.globalconfig" Pack="true" PackagePath="build\FunctionalCore.globalconfig" />
     <None Include="..\..\README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 
