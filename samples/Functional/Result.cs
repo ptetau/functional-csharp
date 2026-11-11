@@ -1,0 +1,63 @@
+using System.Collections.Immutable;
+
+namespace Functional;
+
+/// <summary>Why something failed. Code is stable and machine-readable; Message is for people.</summary>
+public sealed record Error(string Code, string Message)
+{
+    public override string ToString() => $"{Code}: {Message}";
+}
+
+/// <summary>
+/// Either a value or an Error. The two cases are nested so nothing else can extend the hierarchy.
+/// Use Match (not a switch) to consume it: C# can't tell that a switch over Ok and Failed is complete.
+/// </summary>
+public abstract record Result<T>
+{
+    private Result() { }
+
+    public sealed record Ok(T Value) : Result<T>
+    {
+        public override TOut Match<TOut>(Func<T, TOut> ok, Func<Error, TOut> failed) => ok(Value);
+    }
+
+    public sealed record Failed(Error Error) : Result<T>
+    {
+        public override TOut Match<TOut>(Func<T, TOut> ok, Func<Error, TOut> failed) => failed(Error);
+    }
+
+    public abstract TOut Match<TOut>(Func<T, TOut> ok, Func<Error, TOut> failed);
+
+    public bool IsOk => Match(_ => true, _ => false);
+
+    public Result<TOut> Map<TOut>(Func<T, TOut> f) => Match<Result<TOut>>(v => f(v), e => e);
+
+    public Result<TOut> Bind<TOut>(Func<T, Result<TOut>> f) => Match(f, e => new Result<TOut>.Failed(e));
+
+    public T ValueOr(T fallback) => Match(v => v, _ => fallback);
+
+    public Result<T> Ensure(Func<T, bool> holds, Func<T, Error> otherwise) =>
+        Bind(v => holds(v) ? this : new Failed(otherwise(v)));
+
+    public static implicit operator Result<T>(T value) => new Ok(value);
+    public static implicit operator Result<T>(Error error) => new Failed(error);
+}
+
+public static class Result
+{
+    public static Result<T> Ok<T>(T value) => new Result<T>.Ok(value);
+
+    public static Result<T> Fail<T>(string code, string message) => new Result<T>.Failed(new Error(code, message));
+
+    /// <summary>All the values, or the first error.</summary>
+    public static Result<ImmutableArray<T>> All<T>(this IEnumerable<Result<T>> results) =>
+        results.Aggregate(
+            Ok(ImmutableArray<T>.Empty),
+            (acc, next) => acc.Bind(xs => next.Map(xs.Add)));
+
+    // LINQ query syntax: from a in ra from b in rb select a + b
+    public static Result<TOut> Select<T, TOut>(this Result<T> r, Func<T, TOut> f) => r.Map(f);
+
+    public static Result<TOut> SelectMany<T, TMid, TOut>(this Result<T> r, Func<T, Result<TMid>> bind, Func<T, TMid, TOut> project) =>
+        r.Bind(a => bind(a).Map(b => project(a, b)));
+}
