@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The functional core: domain model, validation, state transitions, search and HTML rendering. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <Import Project="..\..\..\FunctionalLint\build\FunctionalCore.props" />
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\Functional\Functional.csproj" />
+  </ItemGroup>
+
+</Project>

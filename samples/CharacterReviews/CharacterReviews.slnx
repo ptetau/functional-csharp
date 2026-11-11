@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="../Functional/Functional.csproj" />
+  <Project Path="CharacterReviews.Core/CharacterReviews.Core.csproj" />
+  <Project Path="CharacterReviews.Web/CharacterReviews.Web.csproj" />
+  <Project Path="CharacterReviews.Tests/CharacterReviews.Tests.csproj" />
+</Solution>
