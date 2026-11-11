@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/FunctionalLint.CodeFixes/FunctionalLint.CodeFixes.csproj" />
+    <Project Path="src/FunctionalLint.Package/FunctionalLint.Package.csproj" />
     <Project Path="src/FunctionalLint/FunctionalLint.csproj" />
   </Folder>
   <Folder Name="/tests/">
