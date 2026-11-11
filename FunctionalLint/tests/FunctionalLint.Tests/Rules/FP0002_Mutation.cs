@@ -156,6 +156,8 @@ public class FP0002_MutationThroughCalls
             }
 
             static bool Forward(string s, out int value) => int.TryParse(s, out value);
+
+            static string Format(int n) => string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{n}:00");
         }
         """);
 

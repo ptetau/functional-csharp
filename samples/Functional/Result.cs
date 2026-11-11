@@ -40,6 +40,10 @@ public closed record Result<T>
 
     public Option<T> ToOption() => Match(Option.Some, _ => Option.None<T>());
 
+    /// <summary>To collect this error alongside others, e.g. one per line of a file.</summary>
+    public Validation<TError, T> ToValidation<TError>(Func<Error, TError> toError) =>
+        Match<Validation<TError, T>>(v => v, e => Validation.Invalid<TError, T>(toError(e)));
+
     /// <summary>For shells and adapters: run one action or the other.</summary>
     public void Switch(Action<T> ok, Action<Error> failed)
     {

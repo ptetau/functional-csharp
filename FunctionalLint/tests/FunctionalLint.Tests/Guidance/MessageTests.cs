@@ -76,6 +76,8 @@ public class MessageTests
             "'Environment.NewLine' depends on the machine it runs on. Call it from an [ImperativeAdapter], or pass the value in." },
         { "FP0014", "public sealed record Order(string Id, System.Collections.Immutable.ImmutableArray<string> Tags);", null,
             "'ImmutableArray<string>' compares by reference, so equal 'Order' records won't be equal. Use ValueList<T> instead." },
+        { "FP0014", "public sealed record Prices(System.Collections.Immutable.ImmutableDictionary<string, decimal> BySku);", null,
+            "'ImmutableDictionary<string, decimal>' compares by reference, so equal 'Prices' records won't be equal. Use ValueMap<TKey, TValue> instead." },
         { "FP0015", "using System.Linq; static class C { static int M(int[] xs) => xs.First(); }", null,
             "'First' throws when nothing matches. Use FirstOrDefault, or a list pattern such as 'is [var first, ..]' instead." },
         { "FP0015", "static class C { static int M(string s) => int.Parse(s); }", null,
@@ -116,7 +118,9 @@ public class MessageTests
     public void Each_message_is_one_short_line(string id, string message)
     {
         Assert.DoesNotContain('\n', message);
-        Assert.True(message.Length <= 120, $"{id} message is {message.Length} chars; keep it under 120 so it fits on one line of build output.");
+        // Type and member names vary, so measure the wording around them.
+        var wording = Regex.Replace(message, "'[^']*'", "''").Length;
+        Assert.True(wording <= 110, $"{id} message is {wording} chars without its quoted names; keep it short enough for one line of build output.");
         Assert.DoesNotMatch(new Regex(@"\{\d+\}"), message);
     }
 

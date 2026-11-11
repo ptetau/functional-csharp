@@ -19,6 +19,7 @@ public sealed class ValueEqualityAttribute : Attribute;
 /// </summary>
 [ValueEquality]
 [CollectionBuilder(typeof(ValueList), nameof(ValueList.Create))]
+[System.Text.Json.Serialization.JsonConverter(typeof(ValueListJsonConverter))]
 public readonly struct ValueList<T> : IReadOnlyList<T>, IEquatable<ValueList<T>>
 {
     private readonly ImmutableArray<T> _items;
@@ -42,6 +43,19 @@ public readonly struct ValueList<T> : IReadOnlyList<T>, IEquatable<ValueList<T>>
     public ValueList<T> SetItem(int index, T item) => new(Items.SetItem(index, item));
     public ValueList<T> Remove(T item) => new(Items.Remove(item));
     public ValueList<T> RemoveAt(int index) => new(Items.RemoveAt(index));
+
+    // Instance methods win over LINQ's extension methods. LINQ over a struct that implements IEnumerable boxes it and
+    // allocates an enumerator on every call (92 MB per render in the ray tracer); these go straight to the array.
+    public TAcc Aggregate<TAcc>(TAcc seed, Func<TAcc, T, TAcc> step) => Items.Aggregate(seed, step);
+    public TOut Aggregate<TAcc, TOut>(TAcc seed, Func<TAcc, T, TAcc> step, Func<TAcc, TOut> result) => Items.Aggregate(seed, step, result);
+    public bool Any() => !Items.IsEmpty;
+    public bool Any(Func<T, bool> predicate) => Items.Any(predicate);
+    public bool All(Func<T, bool> predicate) => Items.All(predicate);
+    public IEnumerable<TOut> Select<TOut>(Func<T, TOut> selector) => Items.Select(selector);
+    public IEnumerable<T> Where(Func<T, bool> predicate) => Items.Where(predicate);
+
+    /// <summary>Makes list patterns with a slice work: <c>xs is [var first, .. var rest]</c>.</summary>
+    public ValueList<T> Slice(int start, int length) => new(Items.Slice(start, length));
 
     public bool Equals(ValueList<T> other) => Items.SequenceEqual(other.Items);
     public override bool Equals(object? obj) => obj is ValueList<T> other && Equals(other);

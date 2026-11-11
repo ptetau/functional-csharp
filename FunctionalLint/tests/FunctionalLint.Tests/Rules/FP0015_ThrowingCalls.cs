@@ -51,6 +51,12 @@ public class FP0015_ThrowingCalls
                 var g = xs.GroupBy(x => x).ToImmutableDictionary(group => group.Key, group => group.Count());
                 var h = names.Max();
                 var i = xs.Select(x => (int?)x).Max();
+                var j = xs.GroupBy(x => x % 2).Select(g => g.First() + g.Max()).ToImmutableArray();
+                var k = xs.Append(18).Max() + xs.Prepend(0).Aggregate((p, q) => p + q);
+                var l = names.DistinctBy(n => n).ToImmutableDictionary(n => n, n => n.Length);
+                var m = System.Text.RegularExpressions.Regex.Match(s, "(?<host>x)");
+                var n2 = m.Groups["host"].Value + m.Groups[1].Value;
+                var o = xs.DefaultIfEmpty(0).First();
             }
         }
         """);

@@ -31,6 +31,15 @@ public closed record Validation<TError, T>
 
     public Result<T> ToResult(Func<ValueList<TError>, Error> toError) => Match<Result<T>>(v => v, e => toError(e));
 
+    public Option<T> ToOption() => Match(Option.Some, _ => Option.None<T>());
+
+    /// <summary>Changes the errors (sort them, add context), keeping the value if there is one.</summary>
+    public Validation<TError, T> MapErrors(Func<ValueList<TError>, ValueList<TError>> f) =>
+        Match<Validation<TError, T>>(v => v, e => new Invalid(f(e)));
+
+    /// <summary>The value as a one-item list, or the empty list.</summary>
+    public ValueList<T> ToValueList() => Match<ValueList<T>>(v => [v], _ => []);
+
     public static implicit operator Validation<TError, T>(T value) => new Valid(value);
 }
 

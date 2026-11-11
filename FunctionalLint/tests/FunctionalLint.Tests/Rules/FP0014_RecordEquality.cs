@@ -18,6 +18,8 @@ public class FP0014_RecordEquality
         }
 
         public readonly record struct Path(ImmutableList<string> {|FP0014:Steps|});
+
+        public sealed record Prices(ImmutableDictionary<string, decimal> {|FP0014:BySku|});
         """);
 
     [Fact]
@@ -47,6 +49,11 @@ public class FP0014_RecordEquality
         public static class NotARecord
         {
             public static readonly ImmutableArray<int> Fine = [];
+        }
+
+        public sealed record Computed(string Csv)
+        {
+            public ImmutableArray<string> Parts => [.. Csv.Split(',')];
         }
         """);
 }

@@ -123,7 +123,7 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
 
     public static readonly DiagnosticDescriptor ReferenceEqualityInRecord = Rule("FP0014",
         "Records must not hold collections that compare by reference",
-        "'{0}' compares by reference, so equal '{1}' records won't be equal. Use ValueList<T> instead.",
+        "'{0}' compares by reference, so equal '{1}' records won't be equal. Use {2} instead.",
         "Records promise value equality, but ImmutableArray, arrays, lists and dictionaries compare by reference, so a record " +
         "holding one is never equal to a copy of itself. Use a collection marked [ValueEquality] (such as ValueList<T>), " +
         "or write the record's Equals yourself.");
@@ -395,6 +395,10 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
     {
         var op = (IArgumentOperation)ctx.Operation;
         if (op.Parameter is not { RefKind: RefKind.Out or RefKind.Ref } parameter) return;
+        // Only a variable you can see can be overwritten. (`string.Create(culture, $"...")` passes a
+        // compiler-made interpolation handler by ref: nothing of yours changes.)
+        if (op.Value is not (ILocalReferenceOperation or IFieldReferenceOperation or IParameterReferenceOperation
+            or IArrayElementReferenceOperation)) return;
         if (IsFreshBinding(op.Value)) return;
         if (op.Value is IParameterReferenceOperation { Parameter.RefKind: RefKind.Out }) return;
         if (IsInsideLoop(op)) return;
@@ -749,8 +753,13 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
                 && SymbolEqualityComparer.Default.Equals(m.Parameters[0].Type.OriginalDefinition, type.OriginalDefinition)))
             return;
 
+        // Only what the record stores takes part in its equality: fields, and properties with a backing field
+        // (auto-properties, positional parameters, `field`). A computed property like `Count => Items.Length` doesn't.
+        var backed = type.GetMembers().OfType<IFieldSymbol>()
+            .Select(f => f.AssociatedSymbol).Where(s => s is not null).ToImmutableHashSet(SymbolEqualityComparer.Default);
+
         var members = type.GetMembers()
-            .Where(m => !m.IsStatic && !m.IsImplicitlyDeclared)
+            .Where(m => !m.IsStatic && !m.IsImplicitlyDeclared && (m is not IPropertySymbol || backed.Contains(m)))
             .Select(m => m switch
             {
                 IPropertySymbol p => (Symbol: (ISymbol)p, p.Type),
@@ -760,7 +769,13 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
             .Where(m => m.Type is not null && ComparesByReference(m.Type));
 
         foreach (var (member, memberType) in members)
-            ctx.ReportDiagnostic(Diagnostic.Create(ReferenceEqualityInRecord, member.Locations[0], Display(memberType!), type.Name));
+        {
+            var isMap = memberType!.AllInterfaces.Concat(memberType is INamedTypeSymbol n ? [n] : [])
+                .Any(i => i.OriginalDefinition.ToDisplayString() is "System.Collections.Generic.IReadOnlyDictionary<TKey, TValue>"
+                    or "System.Collections.Generic.IDictionary<TKey, TValue>");
+            ctx.ReportDiagnostic(Diagnostic.Create(ReferenceEqualityInRecord, member.Locations[0], Display(memberType), type.Name,
+                isMap ? "ValueMap<TKey, TValue>" : "ValueList<T>"));
+        }
     }
 
     // Collections compare by reference unless their type says otherwise with [ValueEquality] (matched by name,
@@ -799,13 +814,15 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         {
             return name switch
             {
-                "First" => (name, "nothing matches", "FirstOrDefault, or a list pattern such as 'is [var first, ..]'"),
-                "Last" => (name, "nothing matches", "LastOrDefault, or a list pattern such as 'is [.., var last]'"),
+                "First" when !IsNonEmpty(op) || method.Parameters.Length > 1 =>
+                    (name, "nothing matches", "FirstOrDefault, or a list pattern such as 'is [var first, ..]'"),
+                "Last" when !IsNonEmpty(op) || method.Parameters.Length > 1 =>
+                    (name, "nothing matches", "LastOrDefault, or a list pattern such as 'is [.., var last]'"),
                 "Single" or "SingleOrDefault" => (name, "there's more than one match", "a list pattern such as 'is [var only]'"),
                 "ElementAt" => (name, "the index is out of range", "ElementAtOrDefault"),
-                "Min" or "Max" or "Average" when returnsPlainValue && !SourceIs(op, "DefaultIfEmpty") =>
+                "Min" or "Max" or "Average" when returnsPlainValue && !IsNonEmpty(op) =>
                     (name, "the sequence is empty", "DefaultIfEmpty(fallback) before it"),
-                "Aggregate" when method.Parameters.Length == 2 => (name, "the sequence is empty", "Aggregate with a seed"),
+                "Aggregate" when method.Parameters.Length == 2 && !IsNonEmpty(op) => (name, "the sequence is empty", "Aggregate with a seed"),
                 "ToDictionary" when !HasUniqueKeys(op) => (name, "two items have the same key", "GroupBy on the key first, or ToLookup"),
                 _ => default,
             };
@@ -834,6 +851,16 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
     // can't be empty: FP0015's own advice has been followed.
     private static bool HasUniqueKeys(IInvocationOperation op) => SourceIs(op, "GroupBy", "Distinct", "DistinctBy", "ToLookup");
 
+    // Sequences that can't be empty: a group from GroupBy, or anything after Append, Prepend or DefaultIfEmpty.
+    private static bool IsNonEmpty(IInvocationOperation op)
+    {
+        var source = op.Arguments.FirstOrDefault()?.Value;
+        while (source is IConversionOperation conversion) source = conversion.Operand;
+        return SourceIs(op, "DefaultIfEmpty", "Append", "Prepend")
+            || source?.Type is { } type && type.AllInterfaces.Concat(type is INamedTypeSymbol n ? [n] : [])
+                .Any(i => i.OriginalDefinition.ToDisplayString() == "System.Linq.IGrouping<TKey, TElement>");
+    }
+
     private static bool SourceIs(IInvocationOperation op, params string[] methods)
     {
         var source = op.Arguments.FirstOrDefault()?.Value;
@@ -847,10 +874,17 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         if (!op.Property.IsIndexer) return default;
         if (op.Parent is IAssignmentOperation assignment && assignment.Target == op) return default;
 
-        var isDictionary = op.Property.ContainingType.AllInterfaces.Concat([op.Property.ContainingType])
-            .Any(i => i.OriginalDefinition.ToDisplayString() is "System.Collections.Generic.IReadOnlyDictionary<TKey, TValue>"
-                or "System.Collections.Generic.IDictionary<TKey, TValue>");
-        return isDictionary
+        // Regex's GroupCollection returns an unsuccessful Group for a missing name instead of throwing.
+        if (op.Property.ContainingType.ToDisplayString() == "System.Text.RegularExpressions.GroupCollection") return default;
+
+        // A key lookup: the indexer takes the dictionary's key type. (An int indexer on a string-keyed collection
+        // is a list indexer, which this rule leaves alone.)
+        var isKeyLookup = op.Property.ContainingType.AllInterfaces.Concat([op.Property.ContainingType])
+            .Where(i => i.OriginalDefinition.ToDisplayString() is "System.Collections.Generic.IReadOnlyDictionary<TKey, TValue>"
+                or "System.Collections.Generic.IDictionary<TKey, TValue>")
+            .Any(i => op.Property.Parameters.Length == 1
+                && SymbolEqualityComparer.Default.Equals(op.Property.Parameters[0].Type, i.TypeArguments[0]));
+        return isKeyLookup
             ? (op.Syntax.ToString(), "the key is missing", "TryGetValue or GetValueOrDefault")
             : default;
     }
