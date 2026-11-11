@@ -10,13 +10,14 @@ A Roslyn analyzer that keeps a C# project functional. It reports errors at build
 | [FP0002](docs/rules/FP0002.md) | Reassigning variables, `+=`, `++`, setting fields, array writes, event `+=` | New values, `with` expressions | |
 | [FP0003](docs/rules/FP0003.md) | Non-readonly fields, `set` accessors, non-readonly record structs | `readonly`, `init`, `readonly record struct` | Yes |
 | [FP0004](docs/rules/FP0004.md) | Plain classes | Records for data, static classes for functions | When safe |
-| [FP0005](docs/rules/FP0005.md) | Creating `List<T>`, `Dictionary<,>`, `StringBuilder` and similar, including `ToList()` | `System.Collections.Immutable` types | |
+| [FP0005](docs/rules/FP0005.md) | Creating `List<T>`, `Dictionary<,>`, `StringBuilder` and similar, including `ToList()`; locals typed `IList<T>` etc. | `System.Collections.Immutable` types | Locals |
 | [FP0006](docs/rules/FP0006.md) | Calling legacy code directly | Call it through an `[ImperativeAdapter]` | |
 | [FP0007](docs/rules/FP0007.md) | `throw` | Return an `Error` on your `Result<T>` | |
 | [FP0008](docs/rules/FP0008.md) | `IList<T>`, `ICollection<T>`, `IDictionary<,>`, `List<T>` etc. in signatures | `IReadOnlyList<T>`, `ImmutableArray<T>` | Yes |
 | [FP0009](docs/rules/FP0009.md) | Adapters with legacy types in their public signatures | Return functional types | |
 | [FP0010](docs/rules/FP0010.md) | `async void` | Return `Task` | Yes |
 | [FP0011](docs/rules/FP0011.md) | Clock, `Guid.NewGuid`, `Random`, `Console`, file I/O, `HttpClient` and similar | An adapter, or pass the value in | |
+| [FP0012](docs/rules/FP0012.md) | Ignoring the result of `list.Add(x)`, LINQ, string or date methods | Use the result: `var updated = list.Add(x)` | |
 
 Each rule's page has a before/after example. The build output links to it.
 
@@ -145,7 +146,6 @@ In test sources, `{|FP0001:text|}` means "expect FP0001 on exactly this text". A
 
 - **Mutating calls on things you were handed.** For example `Array.Sort(xs)`, or a method on a mutable type from a library. FP0005 and FP0008 stop most mutable collections from getting in, which covers most cases.
 - **Mutation inside libraries you call.**
-- **Locals typed as mutable interfaces.** FP0008 checks signatures, not local variables.
 - **Arrays in signatures.** Arrays are allowed, but writing to an element is flagged.
 
 ## A warning about recursion

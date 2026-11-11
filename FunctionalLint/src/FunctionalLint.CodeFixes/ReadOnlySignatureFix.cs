@@ -12,7 +12,7 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 namespace FunctionalLint.CodeFixes;
 
 /// <summary>
-/// FP0008: swaps a mutable collection type in a signature for its read-only interface,
+/// FP0008, and FP0005 on a local's declared type: swaps a mutable collection type for its read-only interface,
 /// e.g. IList&lt;T&gt; and List&lt;T&gt; become IReadOnlyList&lt;T&gt;. Callers passing a list still compile.
 /// Code that went on to mutate the collection stops compiling, which shows where it happened.
 /// </summary>
@@ -33,14 +33,21 @@ public sealed class ReadOnlySignatureFix : CodeFixProvider
     };
 
     public override ImmutableArray<string> FixableDiagnosticIds { get; } =
-        ImmutableArray.Create(FunctionalAnalyzer.MutableSignature.Id);
+        ImmutableArray.Create(FunctionalAnalyzer.MutableSignature.Id, FunctionalAnalyzer.NoMutableTypes.Id);
 
     public override FixAllProvider GetFixAllProvider() => WellKnownFixAllProviders.BatchFixer;
 
     public override async Task RegisterCodeFixesAsync(CodeFixContext context)
     {
         var found = await FixHelpers.TokenAt(context.Document, context.Span, context.CancellationToken).ConfigureAwait(false);
-        if (found is not var (root, token) || DeclaredType(token.Parent) is not { } typeSyntax) return;
+        if (found is not var (root, token)) return;
+        var diagnostic = context.Diagnostics[0];
+
+        // FP0005 is only fixable when it points at a local's declared type, not at `new List<int>()`.
+        var typeSyntax = diagnostic.Id == FunctionalAnalyzer.NoMutableTypes.Id
+            ? token.Parent?.FirstAncestorOrSelf<VariableDeclarationSyntax>() is { } local && local.Type.Span == context.Span ? local.Type : null
+            : DeclaredType(token.Parent);
+        if (typeSyntax is null) return;
 
         var model = await context.Document.GetSemanticModelAsync(context.CancellationToken).ConfigureAwait(false);
         if (model is null) return;
@@ -59,7 +66,7 @@ public sealed class ReadOnlySignatureFix : CodeFixProvider
                 rewritten.WithIdentifier(SyntaxFactory.Identifier(swaps.First(s => s.Name == original).Replacement!)
                     .WithTriviaFrom(original.Identifier)));
             return Task.FromResult(context.Document.WithSyntaxRoot(root.ReplaceNode(typeSyntax, newType)));
-        }, equivalenceKey: "FP0008"), context.Diagnostics[0]);
+        }, equivalenceKey: diagnostic.Id), diagnostic);
     }
 
     private static string? Replacement(SemanticModel model, GenericNameSyntax name)

@@ -5,6 +5,7 @@ using System.Collections.Immutable;
 using System.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Diagnostics;
 using Microsoft.CodeAnalysis.Operations;
 
@@ -23,6 +24,7 @@ namespace FunctionalLint;
 ///   FP0009  adapters must not expose legacy types
 ///   FP0010  no async void
 ///   FP0011  no side-effecting APIs (clock, random, I/O, console...)
+///   FP0012  don't throw away the result of a call that returns a new value
 ///
 /// Code inside an [ImperativeAdapter] type or member, or inside a namespace listed in
 /// functional_lint.legacy_namespaces, is exempt from every rule except FP0009.
@@ -102,6 +104,12 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         "Functions that read the clock, random numbers, the console, files or the network give different answers " +
         "for the same input. Pass the value in as a parameter (e.g. 'DateTime now'), or wrap the API in an adapter.");
 
+    public static readonly DiagnosticDescriptor IgnoredResult = Rule("FP0012",
+        "Result of a pure call is ignored",
+        "'{0}' returns a new value and leaves the original unchanged. Use the result instead.",
+        "Immutable collections, strings, dates and LINQ never change what they're called on: 'list.Add(x)' returns a new list. " +
+        "Calling one as a statement does nothing, so it's almost always a bug. Assign the result: 'var updated = list.Add(x);'.");
+
     public const string HelpLinkBase = "https://github.com/ptetau/functional-csharp/blob/main/FunctionalLint/docs/rules/";
 
     private static DiagnosticDescriptor Rule(string id, string title, string message, string description) =>
@@ -110,7 +118,7 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
 
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics { get; } = ImmutableArray.Create(
         NoLoops, NoMutation, NoMutableState, NoObjects, NoMutableTypes, NoDirectImperative,
-        NoThrow, MutableSignature, AdapterLeak, AsyncVoid, ImpureApi);
+        NoThrow, MutableSignature, AdapterLeak, AsyncVoid, ImpureApi, IgnoredResult);
 
     // Configuration -----------------------------------------------------------
 
@@ -191,6 +199,7 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         context.RegisterOperationAction(GuardOp(AnalyzeEventAssignment), OperationKind.EventAssignment);
         context.RegisterOperationAction(GuardOp(AnalyzeBoundary), ReferenceKinds);
         context.RegisterOperationAction(GuardOp(AnalyzeThrow), OperationKind.Throw);
+        context.RegisterOperationAction(GuardOp(AnalyzeIgnoredResult), OperationKind.ExpressionStatement);
         context.RegisterOperationAction(GuardOp(AnalyzeAsyncVoidFunction),
             OperationKind.AnonymousFunction, OperationKind.LocalFunction);
 
@@ -207,11 +216,16 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
             var compilation = start.Compilation;
             var mutableTypes = Resolve(compilation, MutableTypes);
             var inSignatures = Resolve(compilation, MutableTypes.Concat(MutableInterfaces));
+            var mutableInterfaces = Resolve(compilation, MutableInterfaces);
             var impureByConfig = new ConcurrentDictionary<string, ImpureApis>(StringComparer.Ordinal);
 
             start.RegisterOperationAction(
                 GuardOp(ctx => AnalyzeCreation(ctx, mutableTypes)),
                 OperationKind.ObjectCreation, OperationKind.CollectionExpression, OperationKind.Invocation);
+
+            start.RegisterOperationAction(
+                GuardOp(ctx => AnalyzeLocalType(ctx, mutableInterfaces)),
+                OperationKind.VariableDeclaration);
 
             start.RegisterSymbolAction(
                 GuardSymbol(ctx => AnalyzeSignature(ctx, inSignatures)),
@@ -377,6 +391,20 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         Report(ctx, NoMutableTypes, ctx.Operation.Syntax, Display(type), alternative);
     }
 
+    // `IList<int> xs = ...` declares a local that can be changed. Concrete types such as List<T> are
+    // caught where they're created (above), so only the interfaces need checking here.
+    private static void AnalyzeLocalType(OperationAnalysisContext ctx, Dictionary<ISymbol, string> banned)
+    {
+        var op = (IVariableDeclarationOperation)ctx.Operation;
+        if (op.Syntax is not VariableDeclarationSyntax { Type: { IsVar: false } typeSyntax }) return;
+        if (op.Declarators.FirstOrDefault()?.Symbol.Type is not { } type) return;
+
+        var hit = TypesIn(type).FirstOrDefault(t => banned.ContainsKey(t.OriginalDefinition));
+        if (hit is null) return;
+
+        Report(ctx, NoMutableTypes, typeSyntax, Display(hit), banned[hit.OriginalDefinition]);
+    }
+
     // FP0006 Calling legacy code directly -------------------------------------
 
     private static void AnalyzeBoundary(OperationAnalysisContext ctx)
@@ -462,6 +490,36 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         var isLambda = method.MethodKind == MethodKind.AnonymousFunction;
         var location = isLambda ? ctx.Operation.Syntax.GetFirstToken().GetLocation() : method.Locations[0];
         ctx.ReportDiagnostic(Diagnostic.Create(AsyncVoid, location, isLambda ? "lambda" : method.Name));
+    }
+
+    // FP0012 Ignored results -------------------------------------------------
+
+    // Types whose methods never change the value they're called on.
+    private static readonly string[] PureValueTypes =
+    {
+        "System.DateTime", "System.DateTimeOffset", "System.TimeSpan", "System.DateOnly", "System.TimeOnly",
+    };
+
+    private static void AnalyzeIgnoredResult(OperationAnalysisContext ctx)
+    {
+        var statement = (IExpressionStatementOperation)ctx.Operation;
+        if (statement.Operation is not IInvocationOperation { TargetMethod: { ReturnsVoid: false } method } invocation) return;
+        if (!ReturnsNewValue(method)) return;
+
+        Report(ctx, IgnoredResult, invocation.Syntax, $"{method.ContainingType.Name}.{method.Name}");
+    }
+
+    private static bool ReturnsNewValue(IMethodSymbol method)
+    {
+        var type = method.ContainingType;
+        var ns = type.ContainingNamespace?.ToDisplayString();
+
+        // ImmutableArray<T>.Builder and friends are mutable, and e.g. Remove returns a bool you may not need.
+        // ImmutableInterlocked changes the variable passed by ref, so its result is optional too.
+        if (ns == "System.Collections.Immutable") return type.Name is not ("Builder" or "ImmutableInterlocked");
+        if (ns == "System.Linq") return type.Name is "Enumerable" or "ImmutableArrayExtensions";
+        if (type.SpecialType == SpecialType.System_String) return true;
+        return PureValueTypes.Contains(type.OriginalDefinition.ToDisplayString());
     }
 
     // FP0011 Side-effecting APIs ----------------------------------------------

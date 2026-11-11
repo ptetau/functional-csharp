@@ -52,6 +52,9 @@ public static class Lint
         };
         AddConfig(test.TestState, config);
         AddConfig(test.FixedState, config);
+        // By default the framework ignores markup in FixedCode for IDs the fix handles. Some diagnostics
+        // are left on purpose (e.g. `new List<int>()` under FP0005), so read the markup as written.
+        test.FixedState.MarkupHandling = MarkupMode.Allow;
         return test.RunAsync();
     }
 

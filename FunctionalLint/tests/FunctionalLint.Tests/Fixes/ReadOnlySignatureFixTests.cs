@@ -57,3 +57,35 @@ public class ReadOnlySignatureFixTests
         }
         """);
 }
+
+public class ReadOnlyLocalFixTests
+{
+    [Fact]
+    public Task Locals_typed_as_mutable_interfaces_become_read_only() => VerifyFix<ReadOnlySignatureFix>("""
+        using System.Collections.Generic;
+
+        static class C
+        {
+            static int M()
+            {
+                {|FP0005:IList<int>|} a = [1, 2];
+                {|FP0005:IDictionary<string, IList<int>>|} b = null!;
+                var c = {|FP0005:new List<int>()|};
+                return a.Count + b.Count + c.Count;
+            }
+        }
+        """, """
+        using System.Collections.Generic;
+
+        static class C
+        {
+            static int M()
+            {
+                IReadOnlyList<int> a = [1, 2];
+                IReadOnlyDictionary<string, IReadOnlyList<int>> b = null!;
+                var c = {|FP0005:new List<int>()|};
+                return a.Count + b.Count + c.Count;
+            }
+        }
+        """);
+}

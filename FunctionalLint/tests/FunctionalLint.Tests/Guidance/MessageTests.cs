@@ -62,6 +62,10 @@ public class MessageTests
             "'DateTime.Now' has side effects. Call it from an [ImperativeAdapter], or pass the value in." },
         { "FP0011", "static class C { static System.Random M() => new System.Random(); }", null,
             "'Random' has side effects. Call it from an [ImperativeAdapter], or pass the value in." },
+        { "FP0005", "static class C { static int M() { System.Collections.Generic.IList<int> xs = [1]; return xs.Count; } }", null,
+            "'IList<int>' is mutable. Use IReadOnlyList<T> or ImmutableArray<T> instead." },
+        { "FP0012", "using System.Collections.Immutable; static class C { static void M(ImmutableArray<int> xs) { xs.Add(1); } }", null,
+            "'ImmutableArray.Add' returns a new value and leaves the original unchanged. Use the result instead." },
     };
 
     [Theory]

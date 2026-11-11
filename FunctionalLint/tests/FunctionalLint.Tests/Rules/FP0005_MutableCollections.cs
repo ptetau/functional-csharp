@@ -45,6 +45,24 @@ public class FP0005_MutableCollections
         """);
 
     [Fact]
+    public Task Locals_typed_as_mutable_interfaces_are_flagged() => Verify("""
+        using System.Collections.Generic;
+
+        static class C
+        {
+            static int M(IReadOnlyList<int> source)
+            {
+                {|FP0005:IList<int>|} a = [1, 2];
+                {|FP0005:ICollection<int>|} b = [3];
+                {|FP0005:IDictionary<string, int>|} c = {|FP0005:new Dictionary<string, int>()|};
+                {|FP0005:System.Func<ISet<int>>|} d = () => null!;
+                IReadOnlyList<int> e = source;
+                return a.Count + b.Count + c.Count + e.Count;
+            }
+        }
+        """);
+
+    [Fact]
     public Task Immutable_collections_and_arrays_are_allowed() => Verify("""
         using System.Collections.Generic;
         using System.Collections.Immutable;
