@@ -21,5 +21,6 @@
   </Folder>
   <Project Path="../FunctionalLint/src/FunctionalLint.CodeFixes/FunctionalLint.CodeFixes.csproj" />
   <Project Path="../FunctionalLint/src/FunctionalLint/FunctionalLint.csproj" />
+  <Project Path="Functional.Tests/Functional.Tests.csproj" />
   <Project Path="Functional/Functional.csproj" />
 </Solution>

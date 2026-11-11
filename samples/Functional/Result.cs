@@ -36,6 +36,21 @@ public closed record Result<T>
     public Result<T> Ensure(Func<T, bool> holds, Func<T, Error> otherwise) =>
         Bind(v => holds(v) ? this : new Failed(otherwise(v)));
 
+    public Result<T> MapError(Func<Error, Error> f) => Match<Result<T>>(v => v, e => f(e));
+
+    public Option<T> ToOption() => Match(Option.Some, _ => Option.None<T>());
+
+    /// <summary>For shells and adapters: run one action or the other.</summary>
+    public void Switch(Action<T> ok, Action<Error> failed)
+    {
+        Action run = this switch
+        {
+            Ok(var value) => () => ok(value),
+            Failed(var error) => () => failed(error),
+        };
+        run();
+    }
+
     public static implicit operator Result<T>(T value) => new Ok(value);
     public static implicit operator Result<T>(Error error) => new Failed(error);
 }
@@ -46,11 +61,18 @@ public static class Result
 
     public static Result<T> Fail<T>(string code, string message) => new Result<T>.Failed(new Error(code, message));
 
-    /// <summary>All the values, or the first error.</summary>
-    public static Result<ImmutableArray<T>> All<T>(this IEnumerable<Result<T>> results) =>
-        results.Aggregate(
-            Ok(ImmutableArray<T>.Empty),
-            (acc, next) => acc.Bind(xs => next.Map(xs.Add)));
+    /// <summary>All the values, or the first error. O(n).</summary>
+    public static Result<ValueList<T>> All<T>(this IEnumerable<Result<T>> results)
+    {
+        var all = results.ToValueList();
+        return all.OfType<Result<T>.Failed>().FirstOrDefault() is { } failed
+            ? failed.Error
+            : Ok(all.OfType<Result<T>.Ok>().Select(ok => ok.Value).ToValueList());
+    }
+
+    /// <summary>Applies f to each item: all the values, or the first error.</summary>
+    public static Result<ValueList<TOut>> Traverse<T, TOut>(this IEnumerable<T> items, Func<T, Result<TOut>> f) =>
+        items.Select(f).All();
 
     // LINQ query syntax: from a in ra from b in rb select a + b
     public static Result<TOut> Select<T, TOut>(this Result<T> r, Func<T, TOut> f) => r.Map(f);
