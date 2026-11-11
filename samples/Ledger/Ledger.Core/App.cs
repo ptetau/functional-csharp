@@ -1,4 +1,3 @@
-using System.Collections.Immutable;
 using Functional;
 
 namespace Ledger.Core;
@@ -37,11 +36,7 @@ public static class App
     /// <summary>Loads the journal and runs `run` on it, or reports why it can't.</summary>
     private static Outcome WithBook(Invocation invocation, Option<string> journal, Func<Book, Outcome> run) =>
         journal.Match(
-            text =>
-            {
-                var validated = Journals.Load(text);
-                return validated.IsValid ? run(validated.Book) : Outcome.Failed(Lines(validated.Problems));
-            },
+            text => Journals.Load(text).Match(run, problems => Outcome.Failed(Lines(problems))),
             () => Outcome.Failed($"error: journal '{invocation.File}' not found\n"));
 
     /// <summary>
@@ -55,8 +50,8 @@ public static class App
         var after = Journals.Load(existing + appended);
         var firstNewLine = LineCount(existing) + 1;
 
-        return !before.IsValid ? Outcome.Failed(Lines(before.Problems))
-            : !after.IsValid ? Outcome.Failed(string.Concat(after.Problems.Select(p =>
+        return !before.IsValid ? Outcome.Failed(Lines(before.ErrorsOrEmpty))
+            : !after.IsValid ? Outcome.Failed(string.Concat(after.ErrorsOrEmpty.Select(p =>
                 $"{(p.Line >= firstNewLine ? "error" : $"line {p.Line}")}: {p.Message}\n")))
             : new Outcome("", "", Outcome.Success, Option.Some(new Append(file, appended)));
     }
@@ -77,17 +72,20 @@ public static class App
         $"{add.Date} {add.Description.ReplaceLineEndings(" ")}\n" +
         string.Concat(add.Postings.Select(p => $"  {p.Account}{p.Amount.Match(amount => "  " + amount, () => "")}\n"));
 
-    private static string Lines(ImmutableArray<Problem> problems) =>
+    private static string Lines(ValueList<Problem> problems) =>
         string.Concat(problems.OrderBy(p => p.Line).Select(p => $"line {p.Line}: {p.Message}\n"));
 }
 
 /// <summary>Reading a journal: parse it, then check it.</summary>
 public static class Journals
 {
-    public static Validated Load(string text)
+    /// <summary>The book, or every problem: syntax problems first, then the rules the readable part breaks.</summary>
+    public static Validation<Problem, Book> Load(string text)
     {
         var parsed = Parser.Parse(text);
         var validated = Validator.Validate(parsed.Journal);
-        return validated with { Problems = parsed.Problems.AddRange(validated.Problems) };
+        return parsed.Problems.IsEmpty
+            ? validated
+            : new Validation<Problem, Book>.Invalid(parsed.Problems.AddRange(validated.ErrorsOrEmpty));
     }
 }

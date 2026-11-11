@@ -8,9 +8,7 @@ var outcome = CommandLine.Parse(args).Match(
         : Option.None<string>()),
     App.Usage);
 
-var appended = outcome.Append.Match(
-    append => { File.AppendAllText(append.Path, append.Text); return true; },
-    () => false);
+outcome.Append.IfSome(append => File.AppendAllText(append.Path, append.Text));
 
 Console.Out.Write(outcome.Stdout);
 Console.Error.Write(outcome.Stderr);

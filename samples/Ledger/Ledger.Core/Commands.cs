@@ -18,7 +18,7 @@ public closed record Command
 
     public sealed record Register(string Prefix) : Command;
 
-    public sealed record Add(string Date, string Description, ImmutableArray<PostingArg> Postings) : Command;
+    public sealed record Add(string Date, string Description, ValueList<PostingArg> Postings) : Command;
 
     public sealed record Open(string Date, string Account) : Command;
 }
@@ -39,21 +39,27 @@ public static class CommandLine
         "  add <date> <description> <account> [<amount>] <account> [<amount>]...\n" +
         "  open <date> <account>\n";
 
-    private sealed record Words(ImmutableDictionary<string, string> Options, ImmutableArray<string> Positional);
+    /// <summary>The options in the order given, and the other words.</summary>
+    private sealed record Words(ValueList<(string Name, string Value)> Options, ValueList<string> Positional)
+    {
+        /// <summary>The value of the first `--name value` given.</summary>
+        public Option<string> Get(string name) =>
+            Option.FromNullable(Options.Where(o => o.Name == name).Select(o => o.Value).FirstOrDefault());
+    }
 
     private static readonly ImmutableArray<string> KnownOptions = ["--file", "--as-of"];
 
     public static Result<Invocation> Parse(IReadOnlyList<string> args) =>
         Split([.. args]).Bind(words =>
             from command in ParseCommand(words)
-            select new Invocation(words.Options.GetValueOrDefault("--file", DefaultFile), command));
+            select new Invocation(words.Get("--file").ValueOr(DefaultFile), command));
 
     /// <summary>Separates `--name value` options from the positional words, wherever they appear.</summary>
     private static Result<Words> Split(ImmutableArray<string> args) => args switch
     {
-        [] => new Words(ImmutableDictionary<string, string>.Empty, []),
+        [] => new Words([], []),
         [var name, var value, .. var rest] when KnownOptions.Contains(name) =>
-            Split([.. rest]).Map(words => words with { Options = words.Options.SetItem(name, value) }),
+            Split([.. rest]).Map(words => words with { Options = words.Options.Insert(0, (name, value)) }),
         [var name, ..] when name.StartsWith("--", StringComparison.Ordinal) => KnownOptions.Contains(name)
             ? Usage_($"{name} needs a value")
             : Usage_($"unknown option {name}"),
@@ -63,11 +69,12 @@ public static class CommandLine
 
     private static Result<Command> ParseCommand(Words words)
     {
-        var asOf = words.Options.TryGetValue("--as-of", out var text)
-            ? Text.ParseDate(text).Map(Option.Some)
-            : Option.None<DateOnly>();
+        var asOf = words.Get("--as-of").Match(
+            text => Text.ParseDate(text).Map(Option.Some),
+            () => Result.Ok(Option.None<DateOnly>()));
 
-        var command = words.Positional switch
+        // Items, because a ValueList can't be sliced by a list pattern's `..`.
+        var command = words.Positional.Items switch
         {
             [] => Usage_<Command>("no command given"),
             ["check"] => new Command.Check(),
@@ -82,16 +89,16 @@ public static class CommandLine
             [var name, ..] => Usage_<Command>($"unknown command '{name}'"),
         };
 
-        return words.Options.ContainsKey("--as-of") && command.Match(c => c is not Command.Balance, _ => false)
+        return words.Get("--as-of").IsSome && command.Match(c => c is not Command.Balance, _ => false)
             ? Usage_<Command>("--as-of only applies to 'balance'")
             : command;
     }
 
     /// <summary>`account [amount] account [amount] ...`: an amount belongs to the account before it.</summary>
-    private static Result<ImmutableArray<PostingArg>> PostingArgs(ImmutableArray<string> words) => words switch
+    private static Result<ValueList<PostingArg>> PostingArgs(ImmutableArray<string> words) => words switch
     {
-        [] => ImmutableArray<PostingArg>.Empty,
-        [var amount, ..] when Text.IsAmount(amount) => Usage_<ImmutableArray<PostingArg>>($"amount '{amount}' must follow an account"),
+        [] => ValueList.Empty<PostingArg>(),
+        [var amount, ..] when Text.IsAmount(amount) => Usage_<ValueList<PostingArg>>($"amount '{amount}' must follow an account"),
         [var account, var amount, .. var rest] when Text.IsAmount(amount) =>
             PostingArgs([.. rest]).Map(ps => ps.Insert(0, new PostingArg(account, Option.Some(amount)))),
         [var account, .. var rest] =>

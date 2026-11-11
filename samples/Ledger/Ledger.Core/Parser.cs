@@ -1,16 +1,22 @@
-using System.Collections.Immutable;
 using Functional;
 
 namespace Ledger.Core;
 
 /// <summary>What could be read from a journal, and every line that couldn't.</summary>
-public sealed record Parsed(Journal Journal, ImmutableArray<Problem> Problems)
+public sealed record Parsed(Journal Journal, ValueList<Problem> Problems)
 {
     public static readonly Parsed Empty = new(Journal.Empty, []);
 
-    public Parsed Concat(Parsed other) => new(
-        new Journal(Journal.Openings.AddRange(other.Journal.Openings), Journal.Transactions.AddRange(other.Journal.Transactions)),
-        Problems.AddRange(other.Problems));
+    /// <summary>Everything in all the parts, in order.</summary>
+    public static Parsed Concat(IEnumerable<Parsed> parts)
+    {
+        var all = parts.ToValueList();
+        return new Parsed(
+            new Journal(
+                all.SelectMany(p => p.Journal.Openings).ToValueList(),
+                all.SelectMany(p => p.Journal.Transactions).ToValueList()),
+            all.SelectMany(p => p.Problems).ToValueList());
+    }
 }
 
 /// <summary>Turns journal text into openings and transactions (L-1, L-2). Checks only the syntax.</summary>
@@ -19,33 +25,36 @@ public static class Parser
     private sealed record SourceLine(int Number, string Text);
 
     /// <summary>A line that starts at column 0 and the indented lines under it.</summary>
-    private sealed record Block(SourceLine Head, ImmutableArray<SourceLine> Body);
-
-    private sealed record Grouping(ImmutableList<Block> Blocks, ImmutableArray<SourceLine> Orphans);
+    private sealed record Block(SourceLine Head, ValueList<SourceLine> Body);
 
     public static Parsed Parse(string text)
     {
         var lines = text.Split('\n')
             .Select((line, index) => new SourceLine(index + 1, line.TrimEnd('\r')))
-            .Where(line => !IsBlankOrComment(line.Text));
+            .Where(line => !IsBlankOrComment(line.Text))
+            .ToValueList();
 
-        var grouped = lines.Aggregate(new Grouping([], []), Group);
+        // Each line belongs to the nearest unindented line at or above it. Lines before the first one belong to none.
+        var heads = lines.Scan(Option.None<SourceLine>(), (head, line) => IsIndented(line.Text) ? head : Option.Some(line));
+        var groups = lines.Zip(heads, (line, head) => (Line: line, Head: head))
+            .GroupBy(x => x.Head, x => x.Line)
+            .ToValueList();
 
-        var orphans = new Parsed(Journal.Empty,
-            [.. grouped.Orphans.Select(line => new Problem(line.Number, "posting is not inside a transaction"))]);
+        var orphans = new Parsed(Journal.Empty, groups
+            .Where(g => !g.Key.IsSome)
+            .SelectMany(g => g.Select(line => new Problem(line.Number, "posting is not inside a transaction")))
+            .ToValueList());
 
-        return grouped.Blocks.Select(ParseBlock).Aggregate(orphans, (all, next) => all.Concat(next));
+        // A head's group starts with the head itself.
+        var blocks = groups.SelectMany(g => g.Key.Map(head => new Block(head, g.Skip(1).ToValueList())).ToValueList());
+
+        return Parsed.Concat(blocks.Select(ParseBlock).Prepend(orphans));
     }
 
     private static bool IsBlankOrComment(string line) =>
         string.IsNullOrWhiteSpace(line) || line.TrimStart().StartsWith(';');
 
     private static bool IsIndented(string line) => char.IsWhiteSpace(line[0]);
-
-    private static Grouping Group(Grouping acc, SourceLine line) =>
-        !IsIndented(line.Text) ? acc with { Blocks = acc.Blocks.Add(new Block(line, [])) }
-        : acc.Blocks.IsEmpty ? acc with { Orphans = acc.Orphans.Add(line) }
-        : acc with { Blocks = acc.Blocks.SetItem(acc.Blocks.Count - 1, acc.Blocks[^1] with { Body = acc.Blocks[^1].Body.Add(line) }) };
 
     private static string[] Words(string text) => text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
 
@@ -61,24 +70,20 @@ public static class Parser
         var stray = block.Body.Select(line => new Problem(line.Number, "an 'open' line can't have postings under it"));
 
         return new Parsed(
-            new Journal(opening.Match(o => ImmutableArray.Create(o), _ => []), []),
-            [.. ProblemsOf(opening, block.Head.Number), .. stray]);
+            new Journal(opening.ToOption().ToValueList(), []),
+            [.. At(block.Head.Number, opening).ErrorsOrEmpty, .. stray]);
     }
 
     private static Parsed ParseTransaction(Block block)
     {
-        var header = ParseHeader(block.Head.Text);
-        var postings = block.Body.Select(ParsePosting).ToImmutableArray();
+        var header = At(block.Head.Number, ParseHeader(block.Head.Text));
+        var postings = block.Body.Traverse(line => At(line.Number, ParsePosting(line)));
+        var transaction = Validation.Combine(header, postings,
+            (h, ps) => new Transaction(block.Head.Number, h.Date, h.Description, ps));
 
-        var transaction =
-            from h in header
-            from ps in postings.All()
-            select new Transaction(block.Head.Number, h.Date, h.Description, ps);
-
-        var problems = ProblemsOf(header, block.Head.Number)
-            .AddRange(postings.SelectMany((posting, i) => ProblemsOf(posting, block.Body[i].Number)));
-
-        return new Parsed(new Journal([], transaction.Match(t => ImmutableArray.Create(t), _ => [])), problems);
+        return new Parsed(
+            new Journal([], transaction.Match<ValueList<Transaction>>(t => [t], _ => [])),
+            transaction.ErrorsOrEmpty);
     }
 
     private static Result<(DateOnly Date, string Description)> ParseHeader(string text)
@@ -102,6 +107,7 @@ public static class Parser
         };
     }
 
-    private static ImmutableArray<Problem> ProblemsOf<T>(Result<T> result, int line) =>
-        result.Match(_ => ImmutableArray<Problem>.Empty, error => [new Problem(line, error.Message)]);
+    /// <summary>The value, or its error as a problem on the given line.</summary>
+    private static Validation<Problem, T> At<T>(int line, Result<T> result) =>
+        result.Match(Validation.Valid<Problem, T>, error => Validation.Invalid<Problem, T>(new Problem(line, error.Message)));
 }

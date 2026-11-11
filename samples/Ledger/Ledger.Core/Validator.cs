@@ -3,44 +3,44 @@ using Functional;
 
 namespace Ledger.Core;
 
-/// <summary>The book built from a journal, and every rule the journal breaks. The book is only meaningful when there are no problems.</summary>
-public sealed record Validated(Book Book, ImmutableArray<Problem> Problems)
-{
-    public bool IsValid => Problems.IsEmpty;
-}
-
 /// <summary>Checks a parsed journal against the bookkeeping rules (L-3 to L-9, L-14).</summary>
 public static class Validator
 {
-    public static Validated Validate(Journal journal)
+    /// <summary>The book built from the journal, or every rule the journal breaks.</summary>
+    public static Validation<Problem, Book> Validate(Journal journal)
     {
-        var accounts = journal.Openings
-            .GroupBy(o => o.Account)
-            .ToImmutableSortedDictionary(g => g.Key, g => g.First().Date, StringComparer.Ordinal);
+        var openings = journal.Openings.DistinctBy(o => o.Account).ToValueList();
+        var opened = openings.ToLookup(o => o.Account, o => o.Date, StringComparer.Ordinal);
 
-        var problems = OpeningProblems(journal.Openings)
-            .AddRange(journal.Transactions.SelectMany(t => TransactionProblems(t, accounts)))
-            .AddRange(OrderProblems(journal.Transactions));
+        ValueList<Problem> problems =
+        [
+            .. OpeningProblems(journal.Openings),
+            .. journal.Transactions.SelectMany(t => TransactionProblems(t, opened)),
+            .. OrderProblems(journal.Transactions),
+        ];
 
         var entries = journal.Transactions
             .OrderBy(t => t.Date)
             .SelectMany(Resolve)
-            .ToImmutableArray();
+            .ToValueList();
 
-        return new Validated(new Book(accounts, entries, journal.Transactions.Length), problems);
+        return problems.IsEmpty
+            ? new Book(openings, entries, journal.Transactions.Count)
+            : new Validation<Problem, Book>.Invalid(problems);
     }
 
-    private static ImmutableArray<Problem> OpeningProblems(ImmutableArray<Opening> openings)
+    private static ImmutableArray<Problem> OpeningProblems(ValueList<Opening> openings)
     {
         var badNames = openings.SelectMany(o => Accounts.Problems(o.Account).Select(message => new Problem(o.Line, message)));
         var duplicates = openings
             .GroupBy(o => o.Account)
-            .SelectMany(g => g.Skip(1).Select(o =>
-                new Problem(o.Line, $"account '{o.Account}' is already open (line {g.First().Line})")));
+            .SelectMany(g => g.ToImmutableArray() is [var first, .. var rest]
+                ? rest.Select(o => new Problem(o.Line, $"account '{o.Account}' is already open (line {first.Line})"))
+                : []);
         return [.. badNames, .. duplicates];
     }
 
-    private static ImmutableArray<Problem> TransactionProblems(Transaction t, ImmutableSortedDictionary<string, DateOnly> accounts)
+    private static ImmutableArray<Problem> TransactionProblems(Transaction t, ILookup<string, DateOnly> accounts)
     {
         var missing = t.Postings.Count(p => !p.Amount.IsSome);
         var sum = t.Postings.Sum(p => p.Amount.ValueOr(0m));
@@ -71,13 +71,13 @@ public static class Validator
     public static string NotOpen(string account, DateOnly date) =>
         $"account '{account}' is not open on {Text.FormatDate(date)}";
 
-    private static bool IsOpen(ImmutableSortedDictionary<string, DateOnly> accounts, string account, DateOnly on) =>
-        accounts.TryGetValue(account, out var opened) && opened <= on;
+    private static bool IsOpen(ILookup<string, DateOnly> accounts, string account, DateOnly on) =>
+        accounts[account].Any(opened => opened <= on);
 
-    private sealed record Order(DateOnly Latest, ImmutableArray<Problem> Problems);
+    private sealed record Order(DateOnly Latest, ValueList<Problem> Problems);
 
     /// <summary>L-9: each transaction must be on or after every transaction above it.</summary>
-    private static ImmutableArray<Problem> OrderProblems(ImmutableArray<Transaction> transactions) =>
+    private static ValueList<Problem> OrderProblems(ValueList<Transaction> transactions) =>
         transactions.Aggregate(new Order(DateOnly.MinValue, []), (order, t) => t.Date < order.Latest
             ? order with
             {

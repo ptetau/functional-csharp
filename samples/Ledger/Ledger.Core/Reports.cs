@@ -19,15 +19,15 @@ public static class Reports
             .ToImmutableArray();
 
         var rows = book.Accounts
-            .Where(a => inRange(a.Value) && Accounts.IsUnder(a.Key, prefix))
-            .SelectMany(a => Accounts.PathsTo(a.Key))
+            .Where(a => inRange(a.Date) && Accounts.IsUnder(a.Account, prefix))
+            .SelectMany(a => Accounts.PathsTo(a.Account))
             .Distinct()
             .OrderBy(Accounts.TreeOrder, StringComparer.Ordinal)
             .Select(path => (Path: path, Amount: Text.FormatAmount(entries.Where(e => Accounts.IsUnder(e.Account, path)).Sum(e => e.Amount))))
             .ToImmutableArray();
 
         var total = Text.FormatAmount(entries.Sum(e => e.Amount));
-        var width = rows.Select(r => r.Amount.Length).Append(total.Length).Append(BalanceAmountWidth).Max();
+        var width = rows.Select(r => r.Amount.Length).Append(total.Length).Aggregate(BalanceAmountWidth, Math.Max);
 
         var lines = rows
             .Select(r => $"{r.Amount.PadLeft(width)}  {Indent(r.Path)}{Accounts.Segments(r.Path)[^1]}")
@@ -41,10 +41,7 @@ public static class Reports
     {
         var entries = book.Entries.Where(e => Accounts.IsUnder(e.Account, prefix)).ToImmutableArray();
 
-        // A running total: LINQ has no Scan, so fold into the list of totals so far.
-        var totals = entries.Aggregate(
-            ImmutableArray<decimal>.Empty,
-            (sums, e) => sums.Add((sums.IsEmpty ? 0m : sums[^1]) + e.Amount));
+        var totals = entries.Scan(0m, (total, e) => total + e.Amount);
 
         var rows = entries
             .Zip(totals, (e, total) => (Entry: e, Amount: Text.FormatAmount(e.Amount), Total: Text.FormatAmount(total)))
@@ -52,7 +49,7 @@ public static class Reports
 
         var descriptionWidth = rows.Select(r => r.Entry.Description.Length).DefaultIfEmpty(0).Max();
         var accountWidth = rows.Select(r => r.Entry.Account.Length).DefaultIfEmpty(0).Max();
-        var amountWidth = rows.SelectMany(r => new[] { r.Amount.Length, r.Total.Length }).Append(RegisterAmountWidth).Max();
+        var amountWidth = rows.SelectMany(r => new[] { r.Amount.Length, r.Total.Length }).Aggregate(RegisterAmountWidth, Math.Max);
 
         return Lines(rows.Select(r =>
             $"{Text.FormatDate(r.Entry.Date)}  {r.Entry.Description.PadRight(descriptionWidth)}  " +
