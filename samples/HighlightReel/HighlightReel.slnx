@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="../Functional/Functional.csproj" />
+  <Project Path="HighlightReel.Core/HighlightReel.Core.csproj" />
+  <Project Path="HighlightReel.Cli/HighlightReel.Cli.csproj" />
+  <Project Path="HighlightReel.Tests/HighlightReel.Tests.csproj" />
+</Solution>
