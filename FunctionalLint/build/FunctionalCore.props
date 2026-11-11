@@ -20,6 +20,10 @@
     <ProjectReference Include="$(MSBuildThisFileDirectory)..\src\FunctionalLint\FunctionalLint.csproj"
                       OutputItemType="Analyzer"
                       ReferenceOutputAssembly="false" />
+    <!-- Code fixes: used by the IDE light bulb and by `dotnet format analyzers` (see heal.sh). -->
+    <ProjectReference Include="$(MSBuildThisFileDirectory)..\src\FunctionalLint.CodeFixes\FunctionalLint.CodeFixes.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
     <GlobalAnalyzerConfigFiles Include="$(MSBuildThisFileDirectory)functional.globalconfig" />
   </ItemGroup>
 
