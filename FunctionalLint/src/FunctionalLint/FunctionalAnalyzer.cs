@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Diagnostics;
 using Microsoft.CodeAnalysis.Operations;
 
@@ -31,52 +32,81 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
 {
     // Rules -------------------------------------------------------------------
 
+    // Messages are what a developer or agent sees in build output, so each one names the
+    // offending code and says what to write instead. Descriptions add the "why" and show
+    // up in the IDE and in SARIF. Help links point at docs/rules/<id>.md.
+
     public static readonly DiagnosticDescriptor NoLoops = Rule("FP0001",
         "Loops are not allowed",
-        "'{0}' loops are not allowed. Use LINQ, Aggregate or recursion instead.");
+        "'{0}' loops are not allowed. Use LINQ, Aggregate or recursion instead.",
+        "Loops work by changing a variable on each pass. Express the result instead: Select to transform, " +
+        "Where to filter, Sum/Count/Any to summarise, Aggregate to fold, recursion for trees.");
 
     public static readonly DiagnosticDescriptor NoMutation = Rule("FP0002",
         "Mutation is not allowed",
-        "'{0}' is changed here. Create a new value instead.");
+        "'{0}' is changed here. Bind a new name or use a 'with' expression instead.",
+        "Values never change once created. Instead of 'x = x + 1' write 'var next = x + 1'. " +
+        "Instead of setting a property write 'item with { Name = name }'.");
 
     public static readonly DiagnosticDescriptor NoMutableState = Rule("FP0003",
         "Mutable state is not allowed",
-        "{0} '{1}' is mutable. {2}");
+        "{0} '{1}' is mutable. {2}",
+        "Fields must be readonly, properties get-only or init, and record structs readonly. " +
+        "A code fix applies the change.");
 
     public static readonly DiagnosticDescriptor NoObjects = Rule("FP0004",
         "Classes are not allowed",
-        "Class '{0}' is not allowed. Use a record for data or a static class for functions.");
+        "Class '{0}' is not allowed. Use a record for data or a static class for functions.",
+        "Plain classes mix data with behaviour and usually hold mutable state. Put data in records and " +
+        "functions in static classes. A code fix converts the class when it is safe to.");
 
     public static readonly DiagnosticDescriptor NoMutableTypes = Rule("FP0005",
         "Mutable collection types are not allowed",
-        "'{0}' is mutable. Use {1} instead.");
+        "'{0}' is mutable. Use {1} instead.",
+        "Build collections with System.Collections.Immutable, LINQ or collection expressions " +
+        "targeting immutable types, such as 'ImmutableArray<int> xs = [1, 2, 3]'.");
 
     public static readonly DiagnosticDescriptor NoDirectImperative = Rule("FP0006",
         "Legacy code must be called through an adapter",
-        "'{0}' is legacy imperative code. Call it through an [ImperativeAdapter] instead.");
+        "'{0}' is legacy imperative code. Call it through an [ImperativeAdapter] instead.",
+        "Functional code reaches the namespaces in functional_lint.legacy_namespaces only through a type or " +
+        "member marked [ImperativeAdapter], so every crossing point is explicit and searchable.");
 
     public static readonly DiagnosticDescriptor NoThrow = Rule("FP0007",
         "Throwing is not allowed",
-        "Don't throw here. Return an Error on the Result railway, or throw from an [ImperativeAdapter].");
+        "Don't throw here. Return an Error on the Result railway, or throw from an [ImperativeAdapter].",
+        "Exceptions are hidden control flow. Return a Result (or similar union) so the caller must handle failure. " +
+        "Adapters may throw and catch at the edge of the system.");
 
     public static readonly DiagnosticDescriptor MutableSignature = Rule("FP0008",
         "Mutable collection types are not allowed in signatures",
-        "'{0}' lets callers change the collection. Use {1} instead.");
+        "'{0}' lets callers change the collection. Use {1} instead.",
+        "Signatures expose read-only or immutable collections so neither side can change what the other holds. " +
+        "A code fix swaps IList, ICollection, IDictionary, ISet, List, Dictionary and HashSet for their read-only interfaces.");
 
     public static readonly DiagnosticDescriptor AdapterLeak = Rule("FP0009",
         "Adapters must not expose legacy types",
-        "'{0}' exposes legacy type '{1}'. Adapters should only expose functional types.");
+        "'{0}' exposes legacy type '{1}'. Map it to a functional type (a record or Result) instead.",
+        "An adapter is the only bridge to legacy code. If it hands out legacy types the bridge leaks. " +
+        "Take legacy services in the constructor, return records, immutable collections or Result.");
 
     public static readonly DiagnosticDescriptor AsyncVoid = Rule("FP0010",
         "async void is not allowed",
-        "'{0}' is async void, so its errors can't be observed. Return Task instead.");
+        "'{0}' is async void, so its errors can't be observed. Return Task instead.",
+        "An async void method can't be awaited and its exceptions crash the process. Return Task or Task<T>. " +
+        "A code fix changes the return type for methods and local functions.");
 
     public static readonly DiagnosticDescriptor ImpureApi = Rule("FP0011",
         "Side-effecting API",
-        "'{0}' has side effects. Call it from an [ImperativeAdapter], or pass the value in.");
+        "'{0}' has side effects. Call it from an [ImperativeAdapter], or pass the value in.",
+        "Functions that read the clock, random numbers, the console, files or the network give different answers " +
+        "for the same input. Pass the value in as a parameter (e.g. 'DateTime now'), or wrap the API in an adapter.");
 
-    private static DiagnosticDescriptor Rule(string id, string title, string message) =>
-        new(id, title, message, "Functional", DiagnosticSeverity.Error, isEnabledByDefault: true);
+    public const string HelpLinkBase = "https://github.com/ptetau/functional-csharp/blob/main/FunctionalLint/docs/rules/";
+
+    private static DiagnosticDescriptor Rule(string id, string title, string message, string description) =>
+        new(id, title, message, "Functional", DiagnosticSeverity.Error, isEnabledByDefault: true,
+            description: description, helpLinkUri: HelpLinkBase + id + ".md");
 
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics { get; } = ImmutableArray.Create(
         NoLoops, NoMutation, NoMutableState, NoObjects, NoMutableTypes, NoDirectImperative,
@@ -181,7 +211,7 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
 
             start.RegisterOperationAction(
                 GuardOp(ctx => AnalyzeCreation(ctx, mutableTypes)),
-                OperationKind.ObjectCreation, OperationKind.CollectionExpression);
+                OperationKind.ObjectCreation, OperationKind.CollectionExpression, OperationKind.Invocation);
 
             start.RegisterSymbolAction(
                 GuardSymbol(ctx => AnalyzeSignature(ctx, inSignatures)),
@@ -201,7 +231,9 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
     private static void AnalyzeLoop(OperationAnalysisContext ctx)
     {
         // Report on the keyword only, so the whole loop body isn't underlined.
+        // `await foreach` starts with `await`, so step past it to the loop keyword.
         var keyword = ctx.Operation.Syntax.GetFirstToken();
+        if (keyword.IsKind(SyntaxKind.AwaitKeyword)) keyword = keyword.GetNextToken();
         ctx.ReportDiagnostic(Diagnostic.Create(NoLoops, keyword.GetLocation(), keyword.Text));
     }
 
@@ -216,6 +248,10 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
 
         // `new Foo { X = 1 }`, `foo with { X = 1 }` and `new { X = 1 }` build a new value.
         if (op.Parent is IObjectOrCollectionInitializerOperation or IAnonymousObjectCreationOperation) return;
+
+        // Writing an out parameter is how a TryParse-style method returns its value.
+        if (op.Target is IParameterReferenceOperation { Parameter.RefKind: RefKind.Out }
+            && op.Kind == OperationKind.SimpleAssignment) return;
 
         // Constructors and init accessors may set their own type's members once.
         if (IsInitialisingOwnMember(op.Target, ctx.ContainingSymbol)) return;
@@ -299,6 +335,9 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
 
         if (type.TypeKind != TypeKind.Class || type.IsRecord || type.IsStatic) return;
 
+        // Top-level statements compile into a hidden Program class. That's host code, not a class someone wrote.
+        if (!type.GetMembers(WellKnownMemberNames.TopLevelStatementsEntryPointMethodName).IsEmpty) return;
+
         // Attributes have to be classes.
         if (InheritsFrom(type, "System.Attribute")) return;
 
@@ -314,10 +353,26 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
 
     // FP0005 Creating mutable collections -------------------------------------
 
+    // LINQ methods that build a mutable collection, and what to call instead.
+    private static readonly Dictionary<string, string> MutableBuilders = new(StringComparer.Ordinal)
+    {
+        ["ToList"] = "ToImmutableArray() or ToImmutableList()",
+        ["ToDictionary"] = "ToImmutableDictionary()",
+        ["ToHashSet"] = "ToImmutableHashSet()",
+    };
+
     private static void AnalyzeCreation(OperationAnalysisContext ctx, Dictionary<ISymbol, string> banned)
     {
         var type = ctx.Operation.Type;
         if (type is null || !banned.TryGetValue(type.OriginalDefinition, out var alternative)) return;
+
+        if (ctx.Operation is IInvocationOperation invocation)
+        {
+            // Methods written in this compilation are already checked by FP0008 (their signature)
+            // or FP0006 (legacy). Here we only want library calls such as Enumerable.ToList.
+            if (invocation.TargetMethod.Locations.Any(l => l.IsInSource)) return;
+            if (MutableBuilders.TryGetValue(invocation.TargetMethod.Name, out var builder)) alternative = builder;
+        }
 
         Report(ctx, NoMutableTypes, ctx.Operation.Syntax, Display(type), alternative);
     }
