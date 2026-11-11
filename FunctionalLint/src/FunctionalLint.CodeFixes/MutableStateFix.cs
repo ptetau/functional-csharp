@@ -32,7 +32,8 @@ public sealed class MutableStateFix : CodeFixProvider
 
         switch (token.Parent)
         {
-            case VariableDeclaratorSyntax { Parent.Parent: FieldDeclarationSyntax field }:
+            case VariableDeclaratorSyntax { Parent.Parent: FieldDeclarationSyntax field } declarator
+                when await CanBeSetOnceAsync(document, declarator, context.CancellationToken).ConfigureAwait(false):
                 Register(context, diagnostic, "Make field readonly", "FP0003",
                     () => FixHelpers.Replace(document, root, field, MakeReadonly(field)));
                 break;
@@ -64,6 +65,22 @@ public sealed class MutableStateFix : CodeFixProvider
                         FixHelpers.WithModifier(record, record.Modifiers, SyntaxKind.ReadOnlyKeyword, (r, m) => r.WithModifiers(m))));
                 break;
         }
+    }
+
+    // A readonly field can only be set by its initializer, a constructor or an init accessor (a `set` accessor
+    // becomes one under this same fix). Without any of those it would stay default forever, which compiles but
+    // leaves a dead field (e.g. a struct filled in by object initialisers).
+    private static async Task<bool> CanBeSetOnceAsync(Document document, VariableDeclaratorSyntax declarator, CancellationToken ct)
+    {
+        if (declarator.Initializer is not null) return true;
+        var model = await document.GetSemanticModelAsync(ct).ConfigureAwait(false);
+        if (model?.GetDeclaredSymbol(declarator, ct) is not IFieldSymbol field) return false;
+        var type = field.ContainingType;
+        return field.IsStatic
+            ? type.StaticConstructors.Any()
+            : type.InstanceConstructors.Any(c => !c.IsImplicitlyDeclared)
+              || type.GetMembers().OfType<IPropertySymbol>().Any(p => !p.IsStatic && p.SetMethod is not null)
+              || type.DeclaringSyntaxReferences.Any(r => r.GetSyntax(ct) is TypeDeclarationSyntax { ParameterList: not null });
     }
 
     private static FieldDeclarationSyntax MakeReadonly(FieldDeclarationSyntax field)

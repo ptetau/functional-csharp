@@ -105,6 +105,31 @@ public class HealerTests
     }
 
     [Fact]
+    public async Task Never_keeps_a_fix_that_breaks_the_build()
+    {
+        // Making `calls` readonly would turn `calls++` into CS0198, so that one fix is thrown away
+        // and its FP0003 stays in the report. The setter next to it is still fixed.
+        var (project, doc) = await Load("""
+            public static class Counter
+            {
+                private static int calls;
+                public static int Next() => ++calls;
+            }
+
+            public record Box { public int Size { get; set; } }
+            """);
+
+        var result = await Healer.HealAsync(project);
+        var text = await Text(result, doc);
+
+        Assert.Contains("private static int calls;", text);
+        Assert.Contains("public int Size { get; init; }", text);
+        Assert.Equal(new[] { ("FP0003", 1) }, result.Fixed.Select(kv => (kv.Key, kv.Value)));
+        Assert.Contains(result.Remaining, d => d.Id == "FP0003");
+        Assert.DoesNotContain(result.Remaining, d => d.Id.StartsWith("CS"));
+    }
+
+    [Fact]
     public async Task Leaves_C_sharp_15_code_alone()
     {
         var source = """

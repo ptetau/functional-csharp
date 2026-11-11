@@ -89,3 +89,23 @@ public class ReadOnlyLocalFixTests
         }
         """);
 }
+
+public class ReadOnlySignatureFixSafetyTests
+{
+    [Fact]
+    public Task Target_typed_new_is_left_alone() => VerifyFix<ReadOnlySignatureFix>("""
+        using System.Collections.Generic;
+
+        public static class C
+        {
+            private static readonly Dictionary<string, int> {|FP0008:Cache|} = {|FP0005:new()|};
+        }
+        """, """
+        using System.Collections.Generic;
+
+        public static class C
+        {
+            private static readonly Dictionary<string, int> {|FP0008:Cache|} = {|FP0005:new()|};
+        }
+        """);
+}

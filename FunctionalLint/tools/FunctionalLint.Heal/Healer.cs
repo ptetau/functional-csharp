@@ -67,7 +67,7 @@ public static class Healer
             foreach (var fixer in Fixers)
                 foreach (var id in fixer.FixableDiagnosticIds)
                 {
-                    var next = await FixAllAsync(project, fixer, id, ct);
+                    var next = await FixRuleAsync(project, fixer, id, ct);
                     if (next is null) continue;
                     project = next;
                     changed = true;
@@ -97,14 +97,81 @@ public static class Healer
         return trees.Sum(t => t?.GetDiagnostics(ct).Count(d => d.Severity == DiagnosticSeverity.Error) ?? 0);
     }
 
-    /// <summary>Compiler errors plus FunctionalLint's diagnostics, using the project's own config (.editorconfig, .globalconfig).</summary>
+    /// <summary>
+    /// What the build would report: compiler errors, FunctionalLint's diagnostics, and errors from the project's
+    /// other analyzers (such as the .NET culture rules FunctionalCore.props turns on), using the project's own
+    /// config (.editorconfig, .globalconfig).
+    /// </summary>
     public static async Task<ImmutableArray<Diagnostic>> DiagnoseAsync(Project project, CancellationToken ct = default)
     {
         var compilation = await project.GetCompilationAsync(ct)
             ?? throw new InvalidOperationException($"Couldn't compile {project.Name}.");
         var compilerErrors = compilation.GetDiagnostics(ct).Where(d => d.Severity == DiagnosticSeverity.Error);
-        var ours = await compilation.WithAnalyzers(Analyzers, project.AnalyzerOptions).GetAnalyzerDiagnosticsAsync(ct);
-        return [.. compilerErrors, .. ours.Where(d => d.Severity != DiagnosticSeverity.Hidden)];
+        var analyzers = Analyzers.AddRange(ProjectAnalyzers(project));
+        var found = await compilation.WithAnalyzers(analyzers, project.AnalyzerOptions).GetAnalyzerDiagnosticsAsync(ct);
+        return [.. compilerErrors, .. found.Where(d => IsOurs(d) ? d.Severity != DiagnosticSeverity.Hidden : d.Severity == DiagnosticSeverity.Error)];
+    }
+
+    // The project's own analyzers, minus FunctionalLint (this tool runs its own copy, so each problem shows once).
+    // An analyzer this tool's Roslyn can't load is skipped: the build still runs it.
+    private static IEnumerable<DiagnosticAnalyzer> ProjectAnalyzers(Project project) =>
+        project.AnalyzerReferences
+            .Where(r => !(r.FullPath ?? r.Display ?? "").Contains("FunctionalLint", StringComparison.OrdinalIgnoreCase))
+            .SelectMany(r =>
+            {
+                try { return r.GetAnalyzers(LanguageNames.CSharp); }
+                catch (Exception) { return ImmutableArray<DiagnosticAnalyzer>.Empty; }
+            });
+
+    /// <summary>
+    /// Fixes every diagnostic of one rule, but never makes the build worse. If fixing them all at once adds a
+    /// compiler error (say, `IReadOnlyList&lt;int&gt; xs = new();`, or a field made readonly that's assigned
+    /// elsewhere), fix them one at a time instead and keep only the fixes that add no error. A fix that's thrown
+    /// away leaves its diagnostic in the report, so it isn't counted as fixed.
+    /// </summary>
+    private static async Task<Project?> FixRuleAsync(Project project, CodeFixProvider fixer, string id, CancellationToken ct)
+    {
+        var baseline = await CompilerErrorsAsync(project, ct);
+        var all = await FixAllAsync(project, fixer, id, ct);
+        if (all is null) return null;
+        if (await CompilerErrorsAsync(all, ct) <= baseline) return all;
+
+        var tried = new HashSet<string>(StringComparer.Ordinal);
+        var changed = false;
+        while (true)
+        {
+            var next = (await DiagnoseAsync(project, ct))
+                .FirstOrDefault(d => d.Id == id && d.Location.IsInSource && !tried.Contains(Key(d)));
+            if (next is null) break;
+            tried.Add(Key(next));
+
+            var candidate = await FixOneAsync(project, fixer, next, ct);
+            if (candidate is null || await CompilerErrorsAsync(candidate, ct) > baseline) continue;
+            project = candidate;
+            changed = true;
+        }
+        return changed ? project : null;
+    }
+
+    // Identifies a diagnostic across edits elsewhere in the file, which move its position.
+    private static string Key(Diagnostic d) =>
+        $"{d.Location.SourceTree?.FilePath}|{d.GetMessage()}|{d.Location.SourceTree?.GetText().ToString(d.Location.SourceSpan)}";
+
+    private static async Task<int> CompilerErrorsAsync(Project project, CancellationToken ct)
+    {
+        var compilation = await project.GetCompilationAsync(ct);
+        return compilation?.GetDiagnostics(ct).Count(d => d.Severity == DiagnosticSeverity.Error) ?? 0;
+    }
+
+    private static async Task<Project?> FixOneAsync(Project project, CodeFixProvider fixer, Diagnostic diagnostic, CancellationToken ct)
+    {
+        if (project.GetDocument(diagnostic.Location.SourceTree) is not { } document) return null;
+        var actions = new List<CodeAction>();
+        await fixer.RegisterCodeFixesAsync(new CodeFixContext(document, diagnostic, (a, _) => actions.Add(a), ct));
+        if (actions.FirstOrDefault() is not { } action) return null;
+
+        var operations = await action.GetOperationsAsync(ct);
+        return operations.OfType<ApplyChangesOperation>().FirstOrDefault()?.ChangedSolution.GetProject(project.Id);
     }
 
     private static async Task<Project?> FixAllAsync(Project project, CodeFixProvider fixer, string id, CancellationToken ct)

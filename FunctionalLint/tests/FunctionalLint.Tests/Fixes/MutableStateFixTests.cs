@@ -67,3 +67,19 @@ public class MutableStateFixTests
         readonly record struct Empty;
         """);
 }
+
+public class MutableStateFixSafetyTests
+{
+    [Fact]
+    public Task Fields_that_could_never_be_set_are_left_alone() => Lint.VerifyFix<MutableStateFix>("""
+        public struct Accumulator
+        {
+            public double {|FP0003:R|};
+        }
+        """, """
+        public struct Accumulator
+        {
+            public double {|FP0003:R|};
+        }
+        """);
+}

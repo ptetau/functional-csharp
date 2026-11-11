@@ -47,7 +47,7 @@ public sealed class ReadOnlySignatureFix : CodeFixProvider
         var typeSyntax = diagnostic.Id == FunctionalAnalyzer.NoMutableTypes.Id
             ? token.Parent?.FirstAncestorOrSelf<VariableDeclarationSyntax>() is { } local && local.Type.Span == context.Span ? local.Type : null
             : DeclaredType(token.Parent);
-        if (typeSyntax is null) return;
+        if (typeSyntax is null || HasTargetTypedNew(typeSyntax.Parent)) return;
 
         var model = await context.Document.GetSemanticModelAsync(context.CancellationToken).ConfigureAwait(false);
         if (model is null) return;
@@ -82,6 +82,14 @@ public sealed class ReadOnlySignatureFix : CodeFixProvider
             ? null
             : replacement;
     }
+
+    // `IReadOnlyList<int> xs = new();` can't compile: there's no interface to construct. Leave those to a person.
+    private static bool HasTargetTypedNew(SyntaxNode? declaration) => declaration switch
+    {
+        VariableDeclarationSyntax v => v.Variables.Any(x => x.Initializer?.Value is ImplicitObjectCreationExpressionSyntax),
+        PropertyDeclarationSyntax p => p.Initializer?.Value is ImplicitObjectCreationExpressionSyntax,
+        _ => false,
+    };
 
     // The type written in the declaration the diagnostic points at.
     private static TypeSyntax? DeclaredType(SyntaxNode? node) => node switch

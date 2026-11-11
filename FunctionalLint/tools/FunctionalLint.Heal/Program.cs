@@ -112,7 +112,7 @@ static async Task<(int Code, string Report)> Run(string path, bool checkOnly, st
         .ThenBy(r => r.Diagnostic.Location.SourceTree?.FilePath, StringComparer.Ordinal)
         .ThenBy(r => r.Diagnostic.Location.SourceSpan.Start)
         .Select(r => (Line: Format(r.Diagnostic) + (r.Fixable ? " [auto-fixable]" : ""), r.Fixable,
-                      InFocus: r.Diagnostic.Location.SourceTree?.FilePath == focus))
+                      InFocus: r.Diagnostic.Location.SourceTree?.FilePath == focus, IsOurs: Healer.IsOurs(r.Diagnostic)))
         .DistinctBy(r => r.Line)
         .ToList();
 
@@ -133,7 +133,7 @@ static async Task<(int Code, string Report)> Run(string path, bool checkOnly, st
         elsewhere.Take(10).ToList().ForEach(r => report.WriteLine(r.Line));
         if (elsewhere.Count > 10) report.WriteLine($"... and {elsewhere.Count - 10} more.");
         if (fixable > 0) report.WriteLine($"{fixable} marked [auto-fixable]: run FunctionalLint/heal.sh <project> to fix them, then fix the rest by hand.");
-        report.WriteLine(DocsHint);
+        if (ordered.Any(r => r.IsOurs)) report.WriteLine(DocsHint);
         return (1, report.ToString());
     }
 
@@ -141,8 +141,11 @@ static async Task<(int Code, string Report)> Run(string path, bool checkOnly, st
         ? $"== {ordered.Count} problem(s), {fixable} auto-fixable with heal.sh ({clock.Elapsed.TotalSeconds:0.0}s)"
         : $"== Remaining: {ordered.Count} to fix by hand ({clock.Elapsed.TotalSeconds:0.0}s)");
     ordered.ForEach(r => report.WriteLine(r.Line));
-    report.WriteLine();
-    report.WriteLine(DocsHint);
+    if (ordered.Any(r => r.IsOurs))
+    {
+        report.WriteLine();
+        report.WriteLine(DocsHint);
+    }
     return (1, report.ToString());
 }
 
