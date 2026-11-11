@@ -1,4 +1,4 @@
-using System.Collections.Immutable;
+using Functional;
 
 namespace CharacterReviews.Core;
 
@@ -29,9 +29,9 @@ public sealed record Review(
 
 /// <summary>Everything the site knows. Each change makes a new State.</summary>
 public sealed record State(
-    ImmutableArray<Title> Titles,
-    ImmutableArray<Character> Characters,
-    ImmutableArray<Review> Reviews)
+    ValueList<Title> Titles,
+    ValueList<Character> Characters,
+    ValueList<Review> Reviews)
 {
     public static readonly State Empty = new([], [], []);
 }

@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using CharacterReviews.Core;
@@ -15,7 +16,7 @@ public sealed class Store
     private static readonly JsonSerializerOptions Json = new()
     {
         WriteIndented = true,
-        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
+        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase), new ValueListConverter() },
     };
 
     private readonly string _path;
@@ -39,12 +40,11 @@ public sealed class Store
         lock (_gate)
         {
             var outcome = change(_state);
-            // Option has no side-effecting "if some" in the shared library, so test the case directly.
-            if (outcome.Saved is Option<State>.Some { Value: var saved })
+            outcome.Saved.IfSome(saved =>
             {
                 Save(_path, saved);
                 _state = saved;
-            }
+            });
             return outcome.Response;
         }
     }
@@ -52,14 +52,8 @@ public sealed class Store
     private static State Load(string path)
     {
         if (!File.Exists(path)) return State.Empty;
-        var loaded = JsonSerializer.Deserialize<State>(File.ReadAllText(path), Json);
-        return loaded is null
-            ? State.Empty
-            // Arrays missing from the file deserialize as default ImmutableArrays, which throw when used.
-            : new State(
-                loaded.Titles.IsDefault ? [] : loaded.Titles,
-                loaded.Characters.IsDefault ? [] : loaded.Characters,
-                loaded.Reviews.IsDefault ? [] : loaded.Reviews);
+        // A list missing from the file comes back as a default ValueList, which is empty, so no clean-up is needed.
+        return JsonSerializer.Deserialize<State>(File.ReadAllText(path), Json) ?? State.Empty;
     }
 
     /// <summary>Write to a temporary file and move it into place, so a crash never leaves half a file.</summary>
@@ -69,5 +63,28 @@ public sealed class Store
         var temp = path + ".tmp";
         File.WriteAllText(temp, JsonSerializer.Serialize(state, Json));
         File.Move(temp, path, overwrite: true);
+    }
+}
+
+/// <summary>
+/// System.Text.Json writes a ValueList as a JSON array but can't read one back: it's a read-only collection
+/// with no Add method. Read it as an ImmutableArray, which the serializer supports, and convert.
+/// </summary>
+internal sealed class ValueListConverter : JsonConverterFactory
+{
+    public override bool CanConvert(Type type) =>
+        type.IsGenericType && type.GetGenericTypeDefinition() == typeof(ValueList<>);
+
+    public override JsonConverter CreateConverter(Type type, JsonSerializerOptions options) =>
+        (JsonConverter)Activator.CreateInstance(typeof(Converter<>).MakeGenericType(type.GetGenericArguments()[0]))!;
+
+    private sealed class Converter<T> : JsonConverter<ValueList<T>>
+    {
+        // A struct converter is also handed JSON null; treat it like a missing list.
+        public override ValueList<T> Read(ref Utf8JsonReader reader, Type type, JsonSerializerOptions options) =>
+            reader.TokenType == JsonTokenType.Null ? default : JsonSerializer.Deserialize<ImmutableArray<T>>(ref reader, options);
+
+        public override void Write(Utf8JsonWriter writer, ValueList<T> value, JsonSerializerOptions options) =>
+            JsonSerializer.Serialize(writer, value.Items, options);
     }
 }

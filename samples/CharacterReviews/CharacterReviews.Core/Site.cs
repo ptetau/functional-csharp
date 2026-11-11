@@ -1,4 +1,3 @@
-using System.Collections.Immutable;
 using Functional;
 
 namespace CharacterReviews.Core;
@@ -49,13 +48,11 @@ public static class Site
         CharacterPage(state, titleSlug, characterSlug, ReviewForm.Blank, [], 200);
 
     private static Response CharacterPage(
-        State state, string titleSlug, string characterSlug, ReviewForm form, ImmutableArray<FieldError> errors, int status) =>
-        Queries.FindCharacter(state, titleSlug, characterSlug)
-            .Match(
-                character => Queries.FindTitle(state, titleSlug).Match<Response>(
-                    title => new Response.Page(status, Html.CharacterPage(title, character, Queries.ReviewsOf(state, character), form, errors)),
-                    () => NotFound("There's no title at this address.")),
-                () => NotFound("There's no character at this address."));
+        State state, string titleSlug, string characterSlug, ReviewForm form, ValueList<FieldError> errors, int status) =>
+        (from character in Queries.FindCharacter(state, titleSlug, characterSlug)
+         from title in Queries.FindTitle(state, titleSlug)
+         select (Response)new Response.Page(status, Html.CharacterPage(title, character, Queries.ReviewsOf(state, character), form, errors)))
+        .Match(page => page, () => NotFound("There's no character at this address."));
 
     /// <summary>C-5: add a review, then redirect to the character page; or show the form again with the problems.</summary>
     public static Outcome PostReview(State state, string titleSlug, string characterSlug, ReviewForm form, DateOnly today) =>

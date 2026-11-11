@@ -68,7 +68,7 @@ public static class Html
     private static string CharacterList(ImmutableArray<CharacterSummary> items, string whenEmpty) =>
         items.IsEmpty ? $"<p class=\"muted\">{whenEmpty}</p>\n" : $"<ul>\n{Join(items.Select(CharacterItem))}</ul>\n";
 
-    private static string ErrorFor(ImmutableArray<FieldError> errors, string field) =>
+    private static string ErrorFor(ValueList<FieldError> errors, string field) =>
         Join(errors.Where(e => e.Field == field)
             .Select(e => $"""<span class="error" id="{field}-error">{E(e.Message)}</span>"""));
 
@@ -132,7 +132,7 @@ public static class Html
         Character character,
         ImmutableArray<Review> reviews,
         ReviewForm form,
-        ImmutableArray<FieldError> errors) =>
+        ValueList<FieldError> errors) =>
         Layout($"{character.Name} in {title.Name}",
             $"""
             <h1>{E(character.Name)}</h1>
@@ -158,7 +158,7 @@ public static class Html
 
         """;
 
-    private static string ReviewFormHtml(Character character, ReviewForm form, ImmutableArray<FieldError> errors) =>
+    private static string ReviewFormHtml(Character character, ReviewForm form, ValueList<FieldError> errors) =>
         $"""
         <h2>Add your review</h2>
         <form action="{E(CharacterUrl(character))}/reviews" method="post">
@@ -190,7 +190,7 @@ public static class Html
     }
 
     /// <summary>C-6: the add-title form.</summary>
-    public static string NewTitlePage(TitleForm form, ImmutableArray<FieldError> errors) =>
+    public static string NewTitlePage(TitleForm form, ValueList<FieldError> errors) =>
         Layout("Add a title",
             $"""
             <h1>Add a title</h1>
@@ -213,7 +213,7 @@ public static class Html
             """);
 
     /// <summary>C-7: the add-character form.</summary>
-    public static string NewCharacterPage(Title title, CharacterForm form, ImmutableArray<FieldError> errors) =>
+    public static string NewCharacterPage(Title title, CharacterForm form, ValueList<FieldError> errors) =>
         Layout($"Add a character to {title.Name}",
             $"""
             <h1>Add a character to <a href="{E(TitleUrl(title))}">{TitleLabel(title)}</a></h1>

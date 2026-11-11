@@ -1,4 +1,5 @@
 using System.Globalization;
+using Functional;
 
 namespace CharacterReviews.Core;
 
@@ -46,22 +47,22 @@ public static class Forms
 
     private static string Trim(string? s) => (s ?? "").Trim();
 
-    public static Validated<NewTitle> Validate(TitleForm raw)
+    public static Validation<FieldError, NewTitle> Validate(TitleForm raw)
     {
         var f = Trimmed(raw);
-        return Validated.Combine(
+        return Validation.Combine(
             RequiredName(f.Name, "name"),
             ParseKind(f.Kind),
             ParseYear(f.Year),
             (name, kind, year) => new NewTitle(name, kind, year));
     }
 
-    public static Validated<NewCharacter> Validate(CharacterForm raw)
+    public static Validation<FieldError, NewCharacter> Validate(CharacterForm raw)
     {
         var f = Trimmed(raw);
-        return Validated.Combine(
+        return Validation.Combine(
             RequiredName(f.Name, "name"),
-            Validated.Check(
+            Fields.Check(
                 f.Description,
                 f.Description.Length <= MaxDescriptionLength,
                 "description",
@@ -69,19 +70,19 @@ public static class Forms
             (name, description) => new NewCharacter(name, description));
     }
 
-    public static Validated<NewReview> Validate(ReviewForm raw)
+    public static Validation<FieldError, NewReview> Validate(ReviewForm raw)
     {
         var f = Trimmed(raw);
-        return Validated.Combine(
+        return Validation.Combine(
             f.Reviewer.Length == 0
-                ? Validated.Invalid<string>("reviewer", "Name is required")
-                : Validated.Check(
+                ? Fields.Invalid<string>("reviewer", "Name is required")
+                : Fields.Check(
                     f.Reviewer,
                     f.Reviewer.Length <= MaxReviewerLength,
                     "reviewer",
                     $"Name must be at most {MaxReviewerLength} characters"),
             ParseRating(f.Rating),
-            Validated.Check(
+            Fields.Check(
                 f.Text,
                 f.Text.Length <= MaxReviewTextLength,
                 "text",
@@ -89,31 +90,31 @@ public static class Forms
             (reviewer, rating, text) => new NewReview(reviewer, rating, text));
     }
 
-    private static Validated<string> RequiredName(string name, string field) =>
+    private static Validation<FieldError, string> RequiredName(string name, string field) =>
         name.Length == 0
-            ? Validated.Invalid<string>(field, "Name is required")
-            : Validated.Check(name, name.Length <= MaxNameLength, field, $"Name must be at most {MaxNameLength} characters");
+            ? Fields.Invalid<string>(field, "Name is required")
+            : Fields.Check(name, name.Length <= MaxNameLength, field, $"Name must be at most {MaxNameLength} characters");
 
-    private static Validated<TitleKind> ParseKind(string kind) =>
+    private static Validation<FieldError, TitleKind> ParseKind(string kind) =>
         kind.ToLowerInvariant() switch
         {
-            "show" => Validated.Valid(TitleKind.Show),
-            "film" => Validated.Valid(TitleKind.Film),
-            "" => Validated.Invalid<TitleKind>("kind", "Kind is required"),
-            _ => Validated.Invalid<TitleKind>("kind", "Kind must be show or film"),
+            "show" => Validation.Valid<FieldError, TitleKind>(TitleKind.Show),
+            "film" => Validation.Valid<FieldError, TitleKind>(TitleKind.Film),
+            "" => Fields.Invalid<TitleKind>("kind", "Kind is required"),
+            _ => Fields.Invalid<TitleKind>("kind", "Kind must be show or film"),
         };
 
-    private static Validated<int> ParseYear(string year) =>
+    private static Validation<FieldError, int> ParseYear(string year) =>
         year.Length == 0
-            ? Validated.Invalid<int>("year", "Year is required")
+            ? Fields.Invalid<int>("year", "Year is required")
             : int.TryParse(year, NumberStyles.None, CultureInfo.InvariantCulture, out var y)
-                ? Validated.Check(y, y is >= MinYear and <= MaxYear, "year", $"Year must be between {MinYear} and {MaxYear}")
-                : Validated.Invalid<int>("year", "Year must be a whole number");
+                ? Fields.Check(y, y is >= MinYear and <= MaxYear, "year", $"Year must be between {MinYear} and {MaxYear}")
+                : Fields.Invalid<int>("year", "Year must be a whole number");
 
-    private static Validated<int> ParseRating(string rating) =>
+    private static Validation<FieldError, int> ParseRating(string rating) =>
         rating.Length == 0
-            ? Validated.Invalid<int>("rating", "Rating is required")
+            ? Fields.Invalid<int>("rating", "Rating is required")
             : int.TryParse(rating, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var r)
-                ? Validated.Check(r, r is >= 1 and <= 5, "rating", "Rating must be between 1 and 5")
-                : Validated.Invalid<int>("rating", "Rating must be a whole number between 1 and 5");
+                ? Fields.Check(r, r is >= 1 and <= 5, "rating", "Rating must be between 1 and 5")
+                : Fields.Invalid<int>("rating", "Rating must be a whole number between 1 and 5");
 }

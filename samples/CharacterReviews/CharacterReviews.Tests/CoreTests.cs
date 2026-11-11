@@ -12,13 +12,13 @@ public class CoreTests
 
     // ---- Helpers: run a transition and insist it worked ----
 
-    private static T Valid<T>(Validated<T> v) =>
+    private static T Valid<T>(Validation<FieldError, T> v) =>
         v.Match(x => x, errors => throw new Xunit.Sdk.XunitException("Expected valid, got: " + string.Join("; ", errors)));
 
     private static T Ok<T>(Result<T> r) =>
         r.Match(x => x, e => throw new Xunit.Sdk.XunitException("Expected ok, got: " + e));
 
-    private static ImmutableArray<FieldError> Errors<T>(Validated<T> v) =>
+    private static ValueList<FieldError> Errors<T>(Validation<FieldError, T> v) =>
         v.Match(_ => throw new Xunit.Sdk.XunitException("Expected errors"), e => e);
 
     private static State WithTitle(State s, string name, string kind, string year) =>
@@ -58,6 +58,24 @@ public class CoreTests
     [Fact]
     public void Slug_that_is_taken_gets_a_number() =>
         Assert.Equal("louise-banks-3", Text.UniqueSlug("louise-banks", ImmutableHashSet.Create("louise-banks", "louise-banks-2")));
+
+    [Fact]
+    public void Slug_with_every_numbered_form_taken_gets_the_next_number() =>
+        Assert.Equal("x-4", Text.UniqueSlug("x", ImmutableHashSet.Create("x", "x-2", "x-3")));
+
+    [Fact]
+    public void Slug_is_free_when_only_other_slugs_are_taken() =>
+        Assert.Equal("x", Text.UniqueSlug("x", ImmutableHashSet.Create("y", "z")));
+
+    // ---- State is a value ----
+
+    [Fact]
+    public void Same_changes_give_equal_states() =>
+        Assert.Equal(Arrival(), Arrival());
+
+    [Fact]
+    public void Different_changes_give_different_states() =>
+        Assert.NotEqual(Arrival(), WithReview(Arrival(), "arrival", "louise-banks", 1));
 
     [Fact]
     public void Slug_example_second_Louise_Banks_in_another_title_keeps_the_plain_slug()

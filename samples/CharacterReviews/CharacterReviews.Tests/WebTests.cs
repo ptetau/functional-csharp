@@ -286,6 +286,27 @@ public class WebTests
         Assert.Contains("4.3", await Page(second.Browser(), "/characters/arrival/louise-banks"));
     }
 
+    [Fact]
+    public async Task C14_data_file_with_missing_lists_loads_as_empty()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"character-reviews-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var file = Path.Combine(dir, "data.json");
+            await File.WriteAllTextAsync(file, """{ "Titles": [{ "Slug": "arrival", "Name": "Arrival", "Kind": "film", "Year": 2016 }], "Reviews": null }""");
+            using var site = new SiteOn(file);
+            var client = site.Browser();
+            Assert.Contains("No characters yet.", await Page(client, "/titles/arrival"));
+            await SeeOther(await Post(client, "/titles/arrival/characters", ("name", "Louise Banks")), "/characters/arrival/louise-banks");
+            Assert.Contains("No reviews yet", await Page(client, "/characters/arrival/louise-banks"));
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
     private sealed class SiteOn(string dataFile) : WebApplicationFactory<Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder) => builder.UseSetting("DataFile", dataFile);

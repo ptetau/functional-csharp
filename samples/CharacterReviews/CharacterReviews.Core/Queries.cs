@@ -43,19 +43,22 @@ public static class Queries
     public static ImmutableArray<Review> NewestFirst(IEnumerable<Review> reviews) =>
         reviews.OrderByDescending(r => r.Date).ThenByDescending(r => r.Seq).ToImmutableArray();
 
-    public static CharacterSummary Summarize(State state, Character character)
+    public static CharacterSummary Summarize(State state, Title title, Character character)
     {
         var reviews = ReviewsOf(state, character);
-        var title = state.Titles.First(t => t.Slug == character.TitleSlug);
         return new CharacterSummary(character, title, reviews.Length, Average(reviews));
     }
+
+    /// <summary>None if the character's title is missing, which only a damaged data file could cause.</summary>
+    public static Option<CharacterSummary> Summarize(State state, Character character) =>
+        FindTitle(state, character.TitleSlug).Map(title => Summarize(state, title, character));
 
     /// <summary>C-3: a title's characters, by name.</summary>
     public static ImmutableArray<CharacterSummary> CharactersOf(State state, Title title) =>
         state.Characters
             .Where(c => c.TitleSlug == title.Slug)
             .OrderBy(c => c.Name, StringComparer.OrdinalIgnoreCase)
-            .Select(c => Summarize(state, c))
+            .Select(c => Summarize(state, title, c))
             .ToImmutableArray();
 
     /// <summary>
@@ -64,7 +67,7 @@ public static class Queries
     /// </summary>
     public static ImmutableArray<CharacterSummary> MostReviewed(State state) =>
         state.Characters
-            .Select(c => Summarize(state, c))
+            .SelectMany(c => Summarize(state, c).ToValueList())
             .Where(s => s.ReviewCount > 0)
             .OrderByDescending(s => s.ReviewCount)
             .ThenByDescending(s => s.Average.ValueOr(0m))
@@ -78,7 +81,9 @@ public static class Queries
         NewestFirst(state.Reviews)
             .Take(HomeListSize)
             .SelectMany(r => FindCharacter(state, r.TitleSlug, r.CharacterSlug)
-                .Match(c => [(r, Summarize(state, c))], () => ImmutableArray<(Review, CharacterSummary)>.Empty))
+                .Bind(c => Summarize(state, c))
+                .Map(about => (r, about))
+                .ToValueList())
             .ToImmutableArray();
 
     /// <summary>
@@ -94,7 +99,7 @@ public static class Queries
             .OrderBy(c => c.Name, StringComparer.OrdinalIgnoreCase)
             .ThenBy(c => c.TitleSlug, StringComparer.Ordinal)
             .Take(MaxSearchResults)
-            .Select(c => Summarize(state, c))
+            .SelectMany(c => Summarize(state, c).ToValueList())
             .ToImmutableArray();
     }
 }

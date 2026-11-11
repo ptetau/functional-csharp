@@ -32,9 +32,12 @@ public static partial class Text
     public static string Slugify(string name) =>
         NotSlugChars().Replace(Fold(name), "-").Trim('-');
 
-    /// <summary>The slug itself if it's free, otherwise the first free one of slug-2, slug-3, ...</summary>
+    /// <summary>
+    /// The slug itself if it's free, otherwise the first free one of slug-2, slug-3, ...
+    /// Of taken.Count + 1 different candidates at least one is free, so the fallback is never used.
+    /// </summary>
     public static string UniqueSlug(string slug, IReadOnlySet<string> taken) =>
-        Enumerable.Range(1, int.MaxValue)
+        Enumerable.Range(1, taken.Count + 1)
             .Select(n => n == 1 ? slug : $"{slug}-{n}")
-            .First(candidate => !taken.Contains(candidate));
+            .FirstOrDefault(candidate => !taken.Contains(candidate)) ?? slug;
 }
