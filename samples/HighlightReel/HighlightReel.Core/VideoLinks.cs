@@ -30,7 +30,7 @@ public static class VideoLinks
         IdPattern.IsMatch(text.Trim())
             ? new VideoRef(text.Trim(), Option.None<int>())
             : LinkPattern.Match(text.Trim()) is { Success: true } link
-                ? FromLink(text, link.Groups["host"].Value.ToLowerInvariant(), Segments(link.Groups["path"].Value), Query(link.Groups["query"].Value))
+                ? FromLink(text, Group(link, "host").ToLowerInvariant(), Segments(Group(link, "path")), Query(Group(link, "query")))
                 : new Error("bad-link", $"'{text}' is not a YouTube video link");
 
     private static Result<VideoRef> FromLink(string text, string host, ImmutableArray<string> path, ImmutableDictionary<string, string> query) =>
@@ -49,10 +49,18 @@ public static class VideoLinks
             _ => new Error("bad-link", $"'{text}' is not a YouTube video link"),
         };
 
+    // H-2. t= wins over start=.
     private static Result<Option<int>> TimeFrom(ImmutableDictionary<string, string> query) =>
-        query.TryGetValue("t", out var t) || query.TryGetValue("start", out t)
-            ? Times.Parse(t).Map(seconds => Option.Some(seconds))
-            : Option.None<int>();
+        Param(query, "t")
+            .OrElse(() => Param(query, "start"))
+            .Match(time => Times.Parse(time).Map(Option.Some), () => Option.None<int>());
+
+    private static Option<string> Param(ImmutableDictionary<string, string> query, string name) =>
+        query.TryGetValue(name, out var value) ? Option.Some(value) : Option.None<string>();
+
+    // A named group's text, or "" if that part of the link is missing.
+    private static string Group(Match match, string name) =>
+        match.Groups.TryGetValue(name, out var group) ? group.Value : "";
 
     private static ImmutableArray<string> Segments(string path) =>
         [.. path.Split('/', StringSplitOptions.RemoveEmptyEntries)];
@@ -65,5 +73,5 @@ public static class VideoLinks
             .Select(parts => (Key: Uri.UnescapeDataString(parts[0]), Value: parts.Length > 1 ? Uri.UnescapeDataString(parts[1].Replace('+', ' ')) : ""))
             .Aggregate(
                 ImmutableDictionary<string, string>.Empty,
-                (found, pair) => found.ContainsKey(pair.Key) ? found : found.Add(pair.Key, pair.Value));
+                (found, pair) => found.ContainsKey(pair.Key) ? found : found.SetItem(pair.Key, pair.Value));
 }

@@ -8,7 +8,7 @@ namespace HighlightReel.Core;
 /// <summary>Reading and writing times as whole seconds (H-3, H-4).</summary>
 public static class Times
 {
-    private sealed record Form(Regex Pattern, ImmutableArray<long> Units);
+    private sealed record Form(Regex Pattern, ValueList<long> Units);
 
     // Each form's capture groups line up with its units. Digits are capped so a total can't overflow a long.
     private static readonly ImmutableArray<Form> Forms =
@@ -24,20 +24,23 @@ public static class Times
         Forms
             .Select(form => (form.Units, Match: form.Pattern.Match(text.Trim())))
             .Where(candidate => candidate.Match.Success)
-            .Select(candidate => Total(candidate.Units, candidate.Match))
+            .SelectMany(candidate => Total(candidate.Units, candidate.Match).ToValueList())
             .Where(total => total <= int.MaxValue)
             .Select(total => Result.Ok((int)total))
-            .DefaultIfEmpty(Result.Fail<int>("bad-time", $"'{text}' is not a valid time (use 95, 1:35, 1:01:35 or 1m35s)"))
-            .First();
+            .FirstOrDefault()
+        ?? Result.Fail<int>("bad-time", $"'{text}' is not a valid time (use 95, 1:35, 1:01:35 or 1m35s)");
 
     /// <summary>Writes seconds as h:mm:ss, e.g. 0:01:35.</summary>
     public static string Format(int seconds) =>
-        string.Create(CultureInfo.InvariantCulture, $"{seconds / 3600}:{seconds / 60 % 60:00}:{seconds % 60:00}");
+        FormattableString.Invariant($"{seconds / 3600}:{seconds / 60 % 60:00}:{seconds % 60:00}");
 
-    private static long Total(ImmutableArray<long> units, Match match) =>
+    // Group 0 is the whole match; groups 1.. line up with the units. A group that didn't take part counts as 0.
+    // The patterns only let digits into a group, so TryParse can't fail; if it did, the form wouldn't match.
+    private static Option<long> Total(ValueList<long> units, Match match) =>
         units
-            .Select((unit, i) => match.Groups[i + 1] is { Success: true } group
-                ? unit * long.Parse(group.Value, CultureInfo.InvariantCulture)
-                : 0)
-            .Sum();
+            .Zip(match.Groups.Values.Skip(1), (unit, group) => group.Success ? Digits(group.Value).Map(n => unit * n) : Option.Some(0L))
+            .Aggregate(Option.Some(0L), (sum, term) => from a in sum from b in term select a + b);
+
+    private static Option<long> Digits(string text) =>
+        long.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out var n) ? Option.Some(n) : Option.None<long>();
 }

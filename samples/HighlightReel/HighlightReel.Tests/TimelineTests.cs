@@ -1,4 +1,4 @@
-using System.Collections.Immutable;
+using Functional;
 using HighlightReel.Core;
 
 namespace HighlightReel.Tests;
@@ -11,8 +11,7 @@ public class TimelineTests
     private static Reel ReelOf(params (string Video, int Seconds, string Label)[] milestones) =>
         milestones.Aggregate(Reel.Empty, (reel, m) => Reels.AddMilestone(reel, m.Video, m.Seconds, m.Label));
 
-    // An array, not an ImmutableArray: ImmutableArray's Equals compares references, so xUnit would call equal contents different.
-    private static (string, int, int, string, int)[] Clips(Reel reel, Padding? padding = null) =>
+    private static ValueList<(string, int, int, string, int)> Clips(Reel reel, Padding? padding = null) =>
         [.. Timelines.Build(reel, padding ?? Padding.Default).Clips
             .Select(p => (p.Clip.VideoId, p.Clip.Start, p.Clip.End, string.Join(" / ", p.Clip.Labels), p.ReelStart))];
 
@@ -86,6 +85,18 @@ public class TimelineTests
     [Fact]
     public void H15_total_is_the_sum_of_all_clip_lengths() =>
         Assert.Equal(35, Timelines.Build(ReelFile.Parse(Session.SpecExample.Text).ValueOr(Reel.Empty), Padding.Default).TotalSeconds);
+
+    [Fact]
+    public void Timelines_built_from_equal_reels_are_equal() =>
+        Assert.Equal(
+            Timelines.Build(ReelFile.Parse(Session.SpecExample.Text).ValueOr(Reel.Empty), Padding.Default),
+            Timelines.Build(ReelFile.Parse(Session.SpecExample.Text).ValueOr(Reel.Empty), Padding.Default));
+
+    [Fact]
+    public void Many_touching_clips_merge_into_one_keeping_every_label_in_order() =>
+        Assert.Equal(
+            [(A, 0, 1005, string.Join(" / ", Enumerable.Range(0, 1001).Select(i => $"m{i}")), 0)],
+            Clips(Enumerable.Range(0, 1001).Aggregate(Reel.Empty, (reel, i) => Reels.AddMilestone(reel, A, i, $"m{i}"))));
 
     [Fact]
     public void An_empty_reel_gives_an_empty_timeline() =>

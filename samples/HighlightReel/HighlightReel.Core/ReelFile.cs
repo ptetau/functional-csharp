@@ -23,14 +23,23 @@ public static class ReelFile
         "#   milestone <order> <video-id> <seconds> <label>",
     ];
 
+    /// <summary>One line of the file.</summary>
+    private closed record Entry
+    {
+        public sealed record Duration(VideoDuration Value) : Entry;
+
+        public sealed record Moment(Milestone Value) : Entry;
+    }
+
     public static Result<Reel> Parse(string text) =>
         text
             .Split('\n')
             .Select((line, index) => (Number: index + 1, Text: line.TrimEnd('\r')))
             .Where(line => line.Text.Trim().Length > 0 && !line.Text.TrimStart().StartsWith('#'))
-            .Select(line => Errors.Prefix(ParseLine(line.Text), $"line {line.Number}: "))
-            .All()
-            .Map(entries => entries.Aggregate(Reel.Empty, (reel, apply) => apply(reel)))
+            .Traverse(line => ParseLine(line.Text).MapError(e => e with { Message = $"line {line.Number}: {e.Message}" }))
+            .Map(entries => new Reel(
+                Reels.Durations(entries.OfType<Entry.Duration>().Select(entry => entry.Value)),
+                entries.OfType<Entry.Moment>().Select(entry => entry.Value).ToValueList()))
             .Ensure(
                 reel => reel.Milestones.Select(m => m.Order).Distinct().Count() == reel.Milestones.Length,
                 _ => new Error("bad-reel", "two milestones have the same order number"));
@@ -38,8 +47,8 @@ public static class ReelFile
     public static string Write(Reel reel) =>
         string.Join('\n', Header
             .Concat(reel.Durations
-                .OrderBy(entry => entry.Key, StringComparer.Ordinal)
-                .Select(entry => Line($"duration {entry.Key} {entry.Value}")))
+                .OrderBy(d => d.VideoId, StringComparer.Ordinal)
+                .Select(d => Line($"duration {d.VideoId} {d.Seconds}")))
             .Concat(reel.Milestones
                 .OrderBy(m => m.Order)
                 .Select(m => Line($"milestone {m.Order} {m.VideoId} {m.Seconds} {m.Label}"))))
@@ -47,18 +56,18 @@ public static class ReelFile
 
     private static string Line(FormattableString line) => line.ToString(CultureInfo.InvariantCulture);
 
-    private static Result<Func<Reel, Reel>> ParseLine(string line) =>
+    private static Result<Entry> ParseLine(string line) =>
         line.Split(' ', 5) switch
         {
             ["duration", var id, var seconds] =>
                 from video in VideoLinks.ParseId(id)
                 from length in Count(seconds)
-                select (Func<Reel, Reel>)(reel => Reels.SetDuration(reel, video, length)),
+                select (Entry)new Entry.Duration(new VideoDuration(video, length)),
             ["milestone", var order, var id, var seconds, var label] when label.Length > 0 =>
                 from number in Count(order)
                 from video in VideoLinks.ParseId(id)
                 from at in Count(seconds)
-                select (Func<Reel, Reel>)(reel => reel with { Milestones = reel.Milestones.Add(new Milestone(video, at, label, number)) }),
+                select (Entry)new Entry.Moment(new Milestone(video, at, label, number)),
             _ => new Error("bad-reel", $"can't read '{line}' (expected 'duration <id> <seconds>' or 'milestone <order> <id> <seconds> <label>')"),
         };
 

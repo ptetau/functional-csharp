@@ -4,7 +4,7 @@ using Functional;
 namespace HighlightReel.Core;
 
 /// <summary>Where the reel lives and the command to run on it.</summary>
-public sealed record Invocation(string ReelPath, ImmutableArray<string> Command);
+public sealed record Invocation(string ReelPath, ValueList<string> Command);
 
 /// <summary>What the shell should do: write the reel file (only if it changed) and print the output.</summary>
 public sealed record Response(Option<string> NewReelText, string Output);
@@ -21,7 +21,7 @@ public static class App
     /// <summary>Runs a command on the reel's text (None if the file doesn't exist yet: the reel is created when it first changes).</summary>
     public static Result<Response> Execute(Invocation invocation, Option<string> reelText) =>
         from reel in reelText.Match(
-            text => Errors.Prefix(ReelFile.Parse(text), $"{invocation.ReelPath}: "),
+            text => ReelFile.Parse(text).MapError(e => e with { Message = $"{invocation.ReelPath}: {e.Message}" }),
             () => Result.Ok(Reel.Empty))
         from outcome in Commands.Run(reel, invocation.Command)
         select new Response(

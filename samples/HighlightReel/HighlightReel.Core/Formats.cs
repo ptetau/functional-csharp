@@ -1,4 +1,3 @@
-using System.Collections.Immutable;
 using System.Globalization;
 using System.Text.Encodings.Web;
 using System.Text.Json;
@@ -66,9 +65,9 @@ public static class Formats
             : value;
 
     // json: the shape in the spec. Serialising records keeps this a plain function from value to text.
-    internal sealed record JsonClip(int Index, string VideoId, int Start, int End, int ReelStart, ImmutableArray<string> Labels, string Url);
+    internal sealed record JsonClip(int Index, string VideoId, int Start, int End, int ReelStart, ValueList<string> Labels, string Url);
 
-    internal sealed record JsonTimeline(ImmutableArray<JsonClip> Clips, int TotalSeconds);
+    internal sealed record JsonTimeline(ValueList<JsonClip> Clips, int TotalSeconds);
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {

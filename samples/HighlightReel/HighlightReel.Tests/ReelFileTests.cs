@@ -23,6 +23,22 @@ public class ReelFileTests
         Assert.Equal(ExampleFile, ReelFile.Parse(ExampleFile).Map(ReelFile.Write).ValueOr("failed"));
 
     [Fact]
+    public void Reels_with_the_same_contents_are_equal() =>
+        Assert.Equal(ReelFile.Parse(ExampleFile), ReelFile.Parse(ExampleFile));
+
+    [Fact]
+    public void Durations_are_kept_in_video_order_so_the_order_they_were_set_in_does_not_matter() =>
+        Assert.Equal(
+            Reels.SetDuration(Reels.SetDuration(Reel.Empty, "aaaaaaaaaaa", 10), "bbbbbbbbbbb", 20),
+            Reels.SetDuration(Reels.SetDuration(Reels.SetDuration(Reel.Empty, "bbbbbbbbbbb", 20), "aaaaaaaaaaa", 5), "aaaaaaaaaaa", 10));
+
+    [Fact]
+    public void The_last_duration_for_a_video_wins() =>
+        Assert.Equal(
+            Functional.Option.Some(20),
+            Reels.DurationOf(ReelFile.Parse("duration dQw4w9WgXcQ 10\nduration dQw4w9WgXcQ 20\n").ValueOr(Reel.Empty), "dQw4w9WgXcQ"));
+
+    [Fact]
     public void Blank_lines_comments_and_crlf_are_ignored() =>
         Assert.Equal(
             ExampleFile,

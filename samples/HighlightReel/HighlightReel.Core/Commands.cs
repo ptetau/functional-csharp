@@ -143,8 +143,8 @@ public static class Commands
             .Where(m => m.VideoId == videoId && m.Seconds > length)
             .OrderBy(m => m.Seconds)
             .Select(m => Result.Fail<int>("past-end", $"'{m.Label}' at {Times.Format(m.Seconds)} is past {Times.Format(length)}; remove it first"))
-            .DefaultIfEmpty(length)
-            .First();
+            .FirstOrDefault()
+        ?? Result.Ok(length);
 
     private static string Describe(Milestone m) => $"{m.VideoId}  {Times.Format(m.Seconds)}  {m.Label}";
 
