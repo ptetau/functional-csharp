@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="../Functional/Functional.csproj" />
+  <Project Path="RayTracer.Core/RayTracer.Core.csproj" />
+  <Project Path="RayTracer.Cli/RayTracer.Cli.csproj" />
+  <Project Path="RayTracer.Tests/RayTracer.Tests.csproj" />
+</Solution>
