@@ -21,7 +21,7 @@ public class ReadOnlySignatureFixTests
             public static int Keys(System.Collections.Generic.IDictionary<string, List<int>> {|FP0008:map|}) => map.Count;
         }
 
-        public record R(List<int> {|FP0008:Items|});
+        public record R(List<int> {|FP0008:{|FP0014:Items|}|});
         """, """
         using System.Collections.Generic;
         using System.Threading.Tasks;
@@ -35,7 +35,7 @@ public class ReadOnlySignatureFixTests
             public static int Keys(System.Collections.Generic.IReadOnlyDictionary<string, IReadOnlyList<int>> map) => map.Count;
         }
 
-        public record R(IReadOnlyList<int> Items);
+        public record R(IReadOnlyList<int> {|FP0014:Items|});
         """);
 
     [Fact]

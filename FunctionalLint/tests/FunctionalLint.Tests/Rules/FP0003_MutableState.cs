@@ -27,8 +27,8 @@ public class FP0003_MutableState
         """);
 
     [Fact]
-    public Task Mutable_record_structs_are_flagged_with_their_generated_properties() => Verify("""
-        public record struct {|FP0003:Point|}(int {|FP0003:X|});
+    public Task Mutable_record_structs_are_reported_once_not_once_per_property() => Verify("""
+        public record struct {|FP0003:Point|}(int X);
         """);
 
     [Fact]

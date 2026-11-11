@@ -52,13 +52,13 @@ public class RobustnessTests(ITestOutputHelper output)
         var source = new StringBuilder("using System.Collections.Immutable;\nusing System.Linq;\n");
         foreach (var i in Enumerable.Range(0, 500))
             source.AppendLine($$"""
-                public sealed record Item{{i}}(int Id, string Name, ImmutableArray<int> Tags);
+                public sealed record Item{{i}}(int Id, string Name, int Weight);
                 public static class Ops{{i}}
                 {
                     public static Item{{i}} Rename(Item{{i}} item, string name) => item with { Name = name };
-                    public static int Score(Item{{i}} item) => item.Tags.Where(t => t > 0).Sum() + item.Id;
+                    public static int Score(Item{{i}} item, ImmutableArray<int> tags) => tags.Where(t => t > 0).Sum() + item.Id * item.Weight;
                     public static ImmutableArray<Item{{i}}> Top(ImmutableArray<Item{{i}}> items) =>
-                        items.OrderByDescending(Score).Take(10).ToImmutableArray();
+                        items.OrderByDescending(item => Score(item, [item.Weight])).Take(10).ToImmutableArray();
                 }
                 """);
 

@@ -38,7 +38,7 @@ public class FP0005_MutableCollections
             static void M(int[] xs)
             {
                 var a = {|FP0005:xs.ToList()|};
-                var b = {|FP0005:xs.ToDictionary(x => x)|};
+                var b = {|FP0005:{|FP0015:xs.ToDictionary(x => x)|}|};
                 var c = {|FP0005:xs.ToHashSet()|};
             }
         }
@@ -73,12 +73,12 @@ public class FP0005_MutableCollections
             static void M(int[] xs)
             {
                 ImmutableArray<int> a = [1, 2];
-                var b = ImmutableDictionary<string, int>.Empty.Add("a", 1);
+                var b = ImmutableDictionary<string, int>.Empty.SetItem("a", 1);
                 var c = xs.ToImmutableArray();
                 var d = xs.Select(x => x * 2).ToArray();
                 int[] e = [1, 2];
                 IReadOnlyList<int> f = [1, 2];
-                var g = xs.ToImmutableDictionary(x => x);
+                var g = xs.GroupBy(x => x).ToImmutableDictionary(group => group.Key, group => group.Count());
                 var h = $"{a.Length}{b.Count}";
             }
         }
@@ -92,6 +92,40 @@ public class FP0005_MutableCollections
         {
             static List<int> {|FP0008:Make|}() => {|FP0005:new List<int>()|};
             static int Use() => Make().Count;
+        }
+        """);
+}
+
+public class FP0005_MoreMutableTypes
+{
+    [Fact]
+    public Task Builders_object_model_and_other_collections_are_flagged() => Verify("""
+        using System.Collections;
+        using System.Collections.Concurrent;
+        using System.Collections.Immutable;
+        using System.Collections.ObjectModel;
+        using System.IO;
+
+        static class C
+        {
+            static void M(ImmutableArray<int> xs)
+            {
+                var a = {|FP0005:ImmutableArray.CreateBuilder<int>()|};
+                var b = {|FP0005:xs.ToBuilder()|};
+                var c = {|FP0005:new Collection<int>()|};
+                var d = {|FP0005:new ArrayList()|};
+                var e = {|FP0005:new ConcurrentQueue<int>()|};
+                var f = {|FP0005:new MemoryStream()|};
+                var g = new ReadOnlyCollection<int>(xs);
+            }
+        }
+        """);
+
+    [Fact]
+    public Task A_builder_is_reported_where_it_is_made_not_at_every_call() => Verify("""
+        static class C
+        {
+            static string M() => {|FP0005:new System.Text.StringBuilder()|}.Append("a").Append("b").ToString();
         }
         """);
 }

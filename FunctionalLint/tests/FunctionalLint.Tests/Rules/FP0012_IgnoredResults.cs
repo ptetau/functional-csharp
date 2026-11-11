@@ -56,17 +56,17 @@ public class FP0012_IgnoredResults
         """);
 
     [Fact]
-    public Task Builders_interlocked_and_void_methods_are_allowed() => Verify("""
+    public Task Builders_and_interlocked_are_not_FP0012s_business_but_are_still_mutation() => Verify("""
         using System.Collections.Immutable;
 
         static class C
         {
             static ImmutableArray<int> M(ImmutableDictionary<string, int> map)
             {
-                var builder = ImmutableArray.CreateBuilder<int>();
+                var builder = {|FP0005:ImmutableArray.CreateBuilder<int>()|};
                 builder.Add(1);
                 builder.Remove(1);
-                ImmutableInterlocked.TryAdd(ref map, "a", 1);
+                ImmutableInterlocked.TryAdd({|FP0002:ref map|}, "a", 1);
                 return builder.ToImmutable();
             }
         }
@@ -80,6 +80,35 @@ public class FP0012_IgnoredResults
         static class C
         {
             static void M(string s) => s.Trim();
+        }
+        """);
+}
+
+public class FP0012_YourOwnTypes
+{
+    [Fact]
+    public Task Methods_on_records_readonly_structs_and_Math_return_new_values() => Verify("""
+        public sealed record Money(decimal Amount)
+        {
+            public Money Add(Money other) => new(Amount + other.Amount);
+            public bool TryHalve(out Money half) { half = new(Amount / 2); return true; }
+        }
+
+        public readonly record struct Vec(double X, double Y)
+        {
+            public Vec Scale(double k) => new(X * k, Y * k);
+        }
+
+        static class C
+        {
+            static Money M(Money a, Vec v)
+            {
+                {|FP0012:a.Add(a)|};
+                {|FP0012:v.Scale(2)|};
+                {|FP0012:System.Math.Sqrt(2)|};
+                a.TryHalve(out var half);
+                return half;
+            }
         }
         """);
 }

@@ -60,7 +60,7 @@ public class MutableStateFixTests
 
     [Fact]
     public Task Record_structs_become_readonly() => VerifyFix<MutableStateFix>("""
-        public record struct {|FP0003:Point|}(int {|FP0003:X|}, int {|FP0003:Y|});
+        public record struct {|FP0003:Point|}(int X, int Y);
         record struct {|FP0003:Empty|};
         """, """
         public readonly record struct Point(int X, int Y);

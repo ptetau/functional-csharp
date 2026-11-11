@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Threading.Tasks;
 using Xunit;
 using static FunctionalLint.Tests.Lint;
@@ -54,7 +55,7 @@ public class FP0011_SideEffects
         public static class C
         {
             public static DateTime Tomorrow(DateTime today) => today.AddDays(1);
-            public static Guid Parse(string s) => Guid.Parse(s);
+            public static Guid Parse(string s) => Guid.TryParse(s, out var g) ? g : Guid.Empty;
             public static string Name() => nameof(Console);
             public static Type T() => typeof(Console);
         }
@@ -87,4 +88,28 @@ public class FP0011_SideEffects
             public static DateTime Now() => DateTime.Now;
         }
         """);
+}
+
+public class FP0011_HiddenInputs
+{
+    [Fact]
+    public async Task Machine_dependent_and_parallel_apis_say_why()
+    {
+        var findings = await Diagnose("""
+            using System.Linq;
+            static class C
+            {
+                static string A() => System.Environment.NewLine;
+                static System.Globalization.CultureInfo B() => System.Globalization.CultureInfo.CurrentCulture;
+                static int D(int[] xs) => xs.AsParallel().Sum();
+            }
+            """);
+
+        Assert.Equal(new[] {
+            "'Environment.NewLine' depends on the machine it runs on. Call it from an [ImperativeAdapter], or pass the value in.",
+            "'CultureInfo.CurrentCulture' depends on the machine it runs on. Call it from an [ImperativeAdapter], or pass the value in.",
+            "'ParallelEnumerable.AsParallel' runs work in an unpredictable order. Call it from an [ImperativeAdapter], or pass the value in.",
+            "'ParallelEnumerable.Sum' runs work in an unpredictable order. Call it from an [ImperativeAdapter], or pass the value in.",
+        }.Order(), findings.Where(f => f.Id == "FP0011").Select(f => f.Message).Order());
+    }
 }

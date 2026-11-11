@@ -26,7 +26,7 @@ public class FP0008_Signatures
     public Task Positional_record_parameters_are_reported_once() => Verify("""
         using System.Collections.Generic;
 
-        public record R(List<int> {|FP0008:Xs|});
+        public record R(List<int> {|FP0008:{|FP0014:Xs|}|});
         """);
 
     [Fact]

@@ -140,3 +140,38 @@ public class FP0002_Mutation
         }
         """);
 }
+
+public class FP0002_MutationThroughCalls
+{
+    [Fact]
+    public Task Out_and_ref_to_existing_variables_are_flagged() => Verify("""
+        static class C
+        {
+            static int M(string s)
+            {
+                var n = 0;
+                int.TryParse(s, {|FP0002:out n|});
+                System.Threading.Interlocked.Increment({|FP0002:ref n|});
+                return int.TryParse(s, out var fresh) ? fresh + n : n;
+            }
+
+            static bool Forward(string s, out int value) => int.TryParse(s, out value);
+        }
+        """);
+
+    [Fact]
+    public Task Library_calls_that_change_their_argument_are_flagged() => Verify("""
+        using System.Collections.Immutable;
+        using System.Runtime.InteropServices;
+
+        static class C
+        {
+            static ImmutableArray<int> M(int[] raw)
+            {
+                {|FP0002:System.Array.Fill(raw, 7)|};
+                {|FP0002:System.Array.Sort(raw)|};
+                return {|FP0002:ImmutableCollectionsMarshal.AsImmutableArray(raw)|};
+            }
+        }
+        """);
+}
