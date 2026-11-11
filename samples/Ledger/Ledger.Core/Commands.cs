@@ -8,38 +8,19 @@ public sealed record PostingArg(string Account, Option<string> Amount);
 
 /// <summary>
 /// What the user asked for. Dates and amounts stay as typed; they're checked against the journal.
-/// Consume it with Match: C# can't tell that a switch over the five cases is complete (CS8509).
+/// A closed record: a switch expression over the five cases is checked for completeness.
 /// </summary>
-public abstract record Command
+public closed record Command
 {
-    private Command() { }
+    public sealed record Check : Command;
 
-    public abstract T Match<T>(Func<Check, T> check, Func<Balance, T> balance, Func<Register, T> register, Func<Add, T> add, Func<Open, T> open);
+    public sealed record Balance(Option<DateOnly> AsOf, string Prefix) : Command;
 
-    public sealed record Check : Command
-    {
-        public override T Match<T>(Func<Check, T> check, Func<Balance, T> balance, Func<Register, T> register, Func<Add, T> add, Func<Open, T> open) => check(this);
-    }
+    public sealed record Register(string Prefix) : Command;
 
-    public sealed record Balance(Option<DateOnly> AsOf, string Prefix) : Command
-    {
-        public override T Match<T>(Func<Check, T> check, Func<Balance, T> balance, Func<Register, T> register, Func<Add, T> add, Func<Open, T> open) => balance(this);
-    }
+    public sealed record Add(string Date, string Description, ImmutableArray<PostingArg> Postings) : Command;
 
-    public sealed record Register(string Prefix) : Command
-    {
-        public override T Match<T>(Func<Check, T> check, Func<Balance, T> balance, Func<Register, T> register, Func<Add, T> add, Func<Open, T> open) => register(this);
-    }
-
-    public sealed record Add(string Date, string Description, ImmutableArray<PostingArg> Postings) : Command
-    {
-        public override T Match<T>(Func<Check, T> check, Func<Balance, T> balance, Func<Register, T> register, Func<Add, T> add, Func<Open, T> open) => add(this);
-    }
-
-    public sealed record Open(string Date, string Account) : Command
-    {
-        public override T Match<T>(Func<Check, T> check, Func<Balance, T> balance, Func<Register, T> register, Func<Add, T> add, Func<Open, T> open) => open(this);
-    }
+    public sealed record Open(string Date, string Account) : Command;
 }
 
 /// <summary>A command and the journal it works on.</summary>

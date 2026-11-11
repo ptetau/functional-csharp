@@ -4,21 +4,11 @@ using Functional;
 namespace CharacterReviews.Core;
 
 /// <summary>What to send back: a page with a status code, or a 303 redirect.</summary>
-public abstract record Response
+public closed record Response
 {
-    private Response() { }
+    public sealed record Page(int Status, string Html) : Response;
 
-    public sealed record Page(int Status, string Html) : Response
-    {
-        public override TOut Match<TOut>(Func<Page, TOut> page, Func<SeeOther, TOut> seeOther) => page(this);
-    }
-
-    public sealed record SeeOther(string Location) : Response
-    {
-        public override TOut Match<TOut>(Func<Page, TOut> page, Func<SeeOther, TOut> seeOther) => seeOther(this);
-    }
-
-    public abstract TOut Match<TOut>(Func<Page, TOut> page, Func<SeeOther, TOut> seeOther);
+    public sealed record SeeOther(string Location) : Response;
 }
 
 /// <summary>The response to a form post, and the state to keep. Saved is None when nothing changed.</summary>

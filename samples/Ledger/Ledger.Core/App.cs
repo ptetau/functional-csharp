@@ -24,13 +24,15 @@ public static class App
         new("", $"error: {error.Message}\n{CommandLine.Usage}", Outcome.UsageError, Option.None<Append>());
 
     /// <summary>`journal` is the file's text, or None when the file doesn't exist.</summary>
-    public static Outcome Execute(Invocation invocation, Option<string> journal) => invocation.Command.Match(
-        check: _ => WithBook(invocation, journal, book =>
+    public static Outcome Execute(Invocation invocation, Option<string> journal) => invocation.Command switch
+    {
+        Command.Check => WithBook(invocation, journal, book =>
             Outcome.Printed($"OK: {book.TransactionCount} transactions, {book.Accounts.Count} accounts\n")),
-        balance: b => WithBook(invocation, journal, book => Outcome.Printed(Reports.Balance(book, b.AsOf, b.Prefix))),
-        register: r => WithBook(invocation, journal, book => Outcome.Printed(Reports.Register(book, r.Prefix))),
-        add: a => Append_(invocation.File, journal.ValueOr(""), Render(a)),
-        open: o => Append_(invocation.File, journal.ValueOr(""), $"open {o.Date} {o.Account}\n"));
+        Command.Balance b => WithBook(invocation, journal, book => Outcome.Printed(Reports.Balance(book, b.AsOf, b.Prefix))),
+        Command.Register r => WithBook(invocation, journal, book => Outcome.Printed(Reports.Register(book, r.Prefix))),
+        Command.Add a => Append_(invocation.File, journal.ValueOr(""), Render(a)),
+        Command.Open o => Append_(invocation.File, journal.ValueOr(""), $"open {o.Date} {o.Account}\n"),
+    };
 
     /// <summary>Loads the journal and runs `run` on it, or reports why it can't.</summary>
     private static Outcome WithBook(Invocation invocation, Option<string> journal, Func<Book, Outcome> run) =>

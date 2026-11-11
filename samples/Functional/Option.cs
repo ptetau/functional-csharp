@@ -1,21 +1,20 @@
 namespace Functional;
 
-/// <summary>A value that may be missing. Prefer it to null when "missing" is a normal answer.</summary>
-public abstract record Option<T>
+/// <summary>
+/// A value that may be missing. Prefer it to null when "missing" is a normal answer.
+/// A C# 15 closed record: a switch expression over <c>Some</c> and <c>None</c> is checked for completeness.
+/// </summary>
+public closed record Option<T>
 {
-    private Option() { }
+    public sealed record Some(T Value) : Option<T>;
 
-    public sealed record Some(T Value) : Option<T>
+    public sealed record None : Option<T>;
+
+    public TOut Match<TOut>(Func<T, TOut> some, Func<TOut> none) => this switch
     {
-        public override TOut Match<TOut>(Func<T, TOut> some, Func<TOut> none) => some(Value);
-    }
-
-    public sealed record None : Option<T>
-    {
-        public override TOut Match<TOut>(Func<T, TOut> some, Func<TOut> none) => none();
-    }
-
-    public abstract TOut Match<TOut>(Func<T, TOut> some, Func<TOut> none);
+        Some(var value) => some(value),
+        None => none(),
+    };
 
     public bool IsSome => Match(_ => true, () => false);
 

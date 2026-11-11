@@ -53,9 +53,11 @@ app.Run();
 static string Field(IFormCollection form, string name) =>
     form.TryGetValue(name, out StringValues values) ? values.ToString() : "";
 
-static IResult Send(Response response) => response.Match(
-    page => Results.Content(page.Html, "text/html; charset=utf-8", statusCode: page.Status),
-    seeOther => new SeeOtherResult(seeOther.Location));
+static IResult Send(Response response) => response switch
+{
+    Response.Page page => Results.Content(page.Html, "text/html; charset=utf-8", statusCode: page.Status),
+    Response.SeeOther seeOther => new SeeOtherResult(seeOther.Location),
+};
 
 /// <summary>Results.Redirect only offers 301, 302, 307 and 308; C-5 wants 303 See Other.</summary>
 sealed class SeeOtherResult(string location) : IResult

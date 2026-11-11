@@ -386,8 +386,8 @@ public class CoreTests
             Site.PostTitle(s3, new TitleForm(evil, evil, evil)).Response,
             Site.PostReview(s3, titleSlug, charSlug, new ReviewForm(evil, evil, evil), Day1).Response,
         };
-        Assert.All(pages, p => Assert.DoesNotContain("<b>", p.Match(page => page.Html, _ => "")));
-        Assert.All(pages, p => Assert.DoesNotContain("\"x\"", p.Match(page => page.Html, _ => "")));
+        Assert.All(pages, p => Assert.DoesNotContain("<b>", (p is Response.Page page ? page.Html : "")));
+        Assert.All(pages, p => Assert.DoesNotContain("\"x\"", (p is Response.Page page ? page.Html : "")));
     }
 
     [Fact]
@@ -409,11 +409,10 @@ public class CoreTests
     // ---- helpers ----
 
     private static string Html(Response response, int status) =>
-        response.Match(
-            page =>
-            {
-                Assert.Equal(status, page.Status);
-                return page.Html;
-            },
-            redirect => throw new Xunit.Sdk.XunitException($"Expected a page, got a redirect to {redirect.Location}"));
+        response switch
+        {
+            Response.Page page when page.Status == status => page.Html,
+            Response.Page page => throw new Xunit.Sdk.XunitException($"Expected status {status}, got {page.Status}"),
+            Response.SeeOther redirect => throw new Xunit.Sdk.XunitException($"Expected a page, got a redirect to {redirect.Location}"),
+        };
 }

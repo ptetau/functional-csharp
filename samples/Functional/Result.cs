@@ -9,24 +9,21 @@ public sealed record Error(string Code, string Message)
 }
 
 /// <summary>
-/// Either a value or an Error. The two cases are nested so nothing else can extend the hierarchy.
-/// Use Match (not a switch) to consume it: C# can't tell that a switch over Ok and Failed is complete.
+/// Either a value or an Error. It's a C# 15 closed record, so a switch expression over
+/// <c>Ok</c> and <c>Failed</c> is checked for completeness by the compiler:
+/// <code>r switch { Result&lt;int&gt;.Ok(var v) =&gt; v, Result&lt;int&gt;.Failed(var e) =&gt; 0 }</code>
 /// </summary>
-public abstract record Result<T>
+public closed record Result<T>
 {
-    private Result() { }
+    public sealed record Ok(T Value) : Result<T>;
 
-    public sealed record Ok(T Value) : Result<T>
+    public sealed record Failed(Error Error) : Result<T>;
+
+    public TOut Match<TOut>(Func<T, TOut> ok, Func<Error, TOut> failed) => this switch
     {
-        public override TOut Match<TOut>(Func<T, TOut> ok, Func<Error, TOut> failed) => ok(Value);
-    }
-
-    public sealed record Failed(Error Error) : Result<T>
-    {
-        public override TOut Match<TOut>(Func<T, TOut> ok, Func<Error, TOut> failed) => failed(Error);
-    }
-
-    public abstract TOut Match<TOut>(Func<T, TOut> ok, Func<Error, TOut> failed);
+        Ok(var value) => ok(value),
+        Failed(var error) => failed(error),
+    };
 
     public bool IsOk => Match(_ => true, _ => false);
 

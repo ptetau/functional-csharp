@@ -12,21 +12,17 @@ public sealed record SceneError(int Line, string Message)
 /// Either a value or every problem found while building it. Unlike Result, which stops at the
 /// first error, this keeps them all (R-2). Functional has no such type, so it lives here.
 /// </summary>
-public abstract record Validation<T>
+public closed record Validation<T>
 {
-    private Validation() { }
+    public sealed record Valid(T Value) : Validation<T>;
 
-    public sealed record Valid(T Value) : Validation<T>
+    public sealed record Invalid(ImmutableArray<SceneError> Errors) : Validation<T>;
+
+    public TOut Match<TOut>(Func<T, TOut> valid, Func<ImmutableArray<SceneError>, TOut> invalid) => this switch
     {
-        public override TOut Match<TOut>(Func<T, TOut> valid, Func<ImmutableArray<SceneError>, TOut> invalid) => valid(Value);
-    }
-
-    public sealed record Invalid(ImmutableArray<SceneError> Errors) : Validation<T>
-    {
-        public override TOut Match<TOut>(Func<T, TOut> valid, Func<ImmutableArray<SceneError>, TOut> invalid) => invalid(Errors);
-    }
-
-    public abstract TOut Match<TOut>(Func<T, TOut> valid, Func<ImmutableArray<SceneError>, TOut> invalid);
+        Valid(var value) => valid(value),
+        Invalid(var errors) => invalid(errors),
+    };
 
     public bool IsValid => Match(_ => true, _ => false);
 }

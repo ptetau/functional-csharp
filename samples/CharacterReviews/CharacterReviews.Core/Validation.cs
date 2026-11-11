@@ -9,21 +9,17 @@ public sealed record FieldError(string Field, string Message);
 /// A value, or every problem found while building it. Unlike Result, which stops at the first error,
 /// this collects them all, so a form can show each problem next to its field.
 /// </summary>
-public abstract record Validated<T>
+public closed record Validated<T>
 {
-    private Validated() { }
+    public sealed record Valid(T Value) : Validated<T>;
 
-    public sealed record Valid(T Value) : Validated<T>
+    public sealed record Invalid(ImmutableArray<FieldError> Errors) : Validated<T>;
+
+    public TOut Match<TOut>(Func<T, TOut> valid, Func<ImmutableArray<FieldError>, TOut> invalid) => this switch
     {
-        public override TOut Match<TOut>(Func<T, TOut> valid, Func<ImmutableArray<FieldError>, TOut> invalid) => valid(Value);
-    }
-
-    public sealed record Invalid(ImmutableArray<FieldError> Errors) : Validated<T>
-    {
-        public override TOut Match<TOut>(Func<T, TOut> valid, Func<ImmutableArray<FieldError>, TOut> invalid) => invalid(Errors);
-    }
-
-    public abstract TOut Match<TOut>(Func<T, TOut> valid, Func<ImmutableArray<FieldError>, TOut> invalid);
+        Valid(var value) => valid(value),
+        Invalid(var errors) => invalid(errors),
+    };
 
     public ImmutableArray<FieldError> ErrorsOrEmpty => Match(_ => ImmutableArray<FieldError>.Empty, e => e);
 
