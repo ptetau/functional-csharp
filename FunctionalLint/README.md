@@ -18,6 +18,7 @@ A Roslyn analyzer that keeps a C# project functional. It reports errors at build
 | [FP0010](docs/rules/FP0010.md) | `async void` | Return `Task` | Yes |
 | [FP0011](docs/rules/FP0011.md) | Clock, `Guid.NewGuid`, `Random`, `Console`, file I/O, `HttpClient` and similar | An adapter, or pass the value in | |
 | [FP0012](docs/rules/FP0012.md) | Ignoring the result of `list.Add(x)`, LINQ, string or date methods | Use the result: `var updated = list.Add(x)` | |
+| [FP0013](docs/rules/FP0013.md) | `_` arms and switch statements over enums, `closed` types and unions | A switch expression that lists every case | |
 
 Each rule's page has a before/after example. The build output links to it.
 

@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
+using System.Reflection;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -25,6 +26,7 @@ namespace FunctionalLint;
 ///   FP0010  no async void
 ///   FP0011  no side-effecting APIs (clock, random, I/O, console...)
 ///   FP0012  don't throw away the result of a call that returns a new value
+///   FP0013  switches over enums, closed types and unions must stay exhaustive
 ///
 /// Code inside an [ImperativeAdapter] type or member, or inside a namespace listed in
 /// functional_lint.legacy_namespaces, is exempt from every rule except FP0009.
@@ -110,6 +112,13 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         "Immutable collections, strings, dates and LINQ never change what they're called on: 'list.Add(x)' returns a new list. " +
         "Calling one as a statement does nothing, so it's almost always a bug. Assign the result: 'var updated = list.Add(x);'.");
 
+    public static readonly DiagnosticDescriptor ExhaustiveSwitch = Rule("FP0013",
+        "Switches must stay exhaustive",
+        "{0} {1}",
+        "The compiler checks that a switch expression over an enum, a closed type or a union handles every case, " +
+        "so adding a case is a compile error until each switch handles it. A catch-all arm or a switch statement turns " +
+        "that check off.");
+
     public const string HelpLinkBase = "https://github.com/ptetau/functional-csharp/blob/main/FunctionalLint/docs/rules/";
 
     private static DiagnosticDescriptor Rule(string id, string title, string message, string description) =>
@@ -118,7 +127,7 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
 
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics { get; } = ImmutableArray.Create(
         NoLoops, NoMutation, NoMutableState, NoObjects, NoMutableTypes, NoDirectImperative,
-        NoThrow, MutableSignature, AdapterLeak, AsyncVoid, ImpureApi, IgnoredResult);
+        NoThrow, MutableSignature, AdapterLeak, AsyncVoid, ImpureApi, IgnoredResult, ExhaustiveSwitch);
 
     // Configuration -----------------------------------------------------------
 
@@ -200,6 +209,8 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         context.RegisterOperationAction(GuardOp(AnalyzeBoundary), ReferenceKinds);
         context.RegisterOperationAction(GuardOp(AnalyzeThrow), OperationKind.Throw);
         context.RegisterOperationAction(GuardOp(AnalyzeIgnoredResult), OperationKind.ExpressionStatement);
+        context.RegisterOperationAction(GuardOp(AnalyzeSwitchExpression), OperationKind.SwitchExpression);
+        context.RegisterOperationAction(GuardOp(AnalyzeSwitchStatement), OperationKind.Switch);
         context.RegisterOperationAction(GuardOp(AnalyzeAsyncVoidFunction),
             OperationKind.AnonymousFunction, OperationKind.LocalFunction);
 
@@ -490,6 +501,72 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         var isLambda = method.MethodKind == MethodKind.AnonymousFunction;
         var location = isLambda ? ctx.Operation.Syntax.GetFirstToken().GetLocation() : method.Locations[0];
         ctx.ReportDiagnostic(Diagnostic.Create(AsyncVoid, location, isLambda ? "lambda" : method.Name));
+    }
+
+    // FP0013 Exhaustive switches ---------------------------------------------
+
+    private static void AnalyzeSwitchExpression(OperationAnalysisContext ctx)
+    {
+        var op = (ISwitchExpressionOperation)ctx.Operation;
+        if (op.Value.Type is not { } type || CheckedKind(type) is null) return;
+
+        // An unguarded arm that matches anything: `_`, `var x`, or the input's own type.
+        var catchAll = op.Arms.FirstOrDefault(arm => arm.Guard is null && arm.Pattern switch
+        {
+            IDiscardPatternOperation => true,
+            IDeclarationPatternOperation { MatchesNull: true } => true,
+            IDeclarationPatternOperation declaration => SymbolEqualityComparer.Default.Equals(declaration.MatchedType, type),
+            ITypePatternOperation typePattern => SymbolEqualityComparer.Default.Equals(typePattern.MatchedType, type),
+            _ => false,
+        });
+        if (catchAll is null) return;
+
+        Report(ctx, ExhaustiveSwitch, catchAll.Pattern.Syntax,
+            $"'{catchAll.Pattern.Syntax}' matches every case of '{Display(type)}' that isn't listed, so a new case won't be an error.",
+            "List each case instead.");
+    }
+
+    private static void AnalyzeSwitchStatement(OperationAnalysisContext ctx)
+    {
+        var op = (ISwitchOperation)ctx.Operation;
+        if (op.Value.Type is not { } type || CheckedKind(type) is not { } kind) return;
+
+        var keyword = op.Syntax.GetFirstToken();
+        ctx.ReportDiagnostic(Diagnostic.Create(ExhaustiveSwitch, keyword.GetLocation(),
+            $"A switch statement over the {kind} '{Display(type)}' isn't checked for missing cases.",
+            "Use a switch expression instead."));
+    }
+
+    // Types whose switch expressions the compiler checks for missing cases, or null.
+    private static string? CheckedKind(ITypeSymbol type) => type switch
+    {
+        INamedTypeSymbol { TypeKind: TypeKind.Enum } e when !e.GetAttributes().Any(a => a.AttributeClass?.Name == "FlagsAttribute") => "enum",
+        _ when type.AllInterfaces.Any(i => i.ToDisplayString() == "System.Runtime.CompilerServices.IUnion") => "union",
+        _ when IsClosed(type) => "closed type",
+        _ => null,
+    };
+
+    // C# 15 `closed` types. In source the modifier is visible in the syntax. For compiled types only the compiler
+    // knows, through ITypeSymbol.IsClosed, which is still marked experimental. This analyzer is built against an
+    // older Roslyn, so it reads that property by reflection and quietly does without it if it ever goes away.
+    private static readonly PropertyInfo? IsClosedProperty =
+        typeof(ITypeSymbol).GetRuntimeProperties().FirstOrDefault(p => p.Name == "IsClosed" && p.PropertyType == typeof(bool));
+
+    private static bool IsClosed(ITypeSymbol type)
+    {
+        var definition = type.OriginalDefinition;
+        if (definition.DeclaringSyntaxReferences.Any(r =>
+                r.GetSyntax() is TypeDeclarationSyntax declaration && declaration.Modifiers.Any(m => m.Text == "closed")))
+            return true;
+
+        try
+        {
+            return IsClosedProperty?.GetValue(definition) is true;
+        }
+        catch (TargetInvocationException)
+        {
+            return false;
+        }
     }
 
     // FP0012 Ignored results -------------------------------------------------

@@ -66,6 +66,10 @@ public class MessageTests
             "'IList<int>' is mutable. Use IReadOnlyList<T> or ImmutableArray<T> instead." },
         { "FP0012", "using System.Collections.Immutable; static class C { static void M(ImmutableArray<int> xs) { xs.Add(1); } }", null,
             "'ImmutableArray.Add' returns a new value and leaves the original unchanged. Use the result instead." },
+        { "FP0013", "public enum Colour { Red, Green } static class C { static int M(Colour c) => c switch { Colour.Red => 1, _ => 0 }; }", null,
+            "'_' matches every case of 'Colour' that isn't listed, so a new case won't be an error. List each case instead." },
+        { "FP0013", "public enum Colour { Red, Green } static class C { static int M(Colour c) { switch (c) { default: return 0; } } }", null,
+            "A switch statement over the enum 'Colour' isn't checked for missing cases. Use a switch expression instead." },
     };
 
     [Theory]
@@ -103,7 +107,7 @@ public class MessageTests
         Assert.True(sentences.Length >= 2, $"{id}: '{message}' should state the problem and then the remedy.");
 
         // The remedy is an instruction, so it starts with a verb.
-        string[] verbs = ["Use", "Bind", "Mark", "Declare", "Call", "Return", "Map"];
+        string[] verbs = ["Use", "Bind", "Mark", "Declare", "Call", "Return", "Map", "List"];
         var remedy = sentences.Last();
         Assert.True(verbs.Any(v => remedy.StartsWith(v)),
             $"{id}: remedy '{remedy}' should start with one of: {string.Join(", ", verbs)}.");
