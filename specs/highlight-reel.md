@@ -27,7 +27,7 @@ The reel is a text file given with `--reel <path>` (default `reel.txt`). It is c
 
 - H-5 `highlights add <url> [<time>] <label>`: adds a milestone. The time comes from the argument, or else from the URL's `t` parameter. If neither gives one, it's an error.
 - H-6 `highlights duration <url-or-id> <time>`: records a video's length. It's optional, and used to stop clips running past the end.
-- H-7 `highlights list`: lists milestones grouped by video, in time order within each video, as `<id>  <h:mm:ss>  <label>`.
+- H-7 `highlights list`: lists milestones grouped by video, in time order within each video, numbered from 1 in that order, as `<n>. <id>  <h:mm:ss>  <label>`.
 - H-8 `highlights links`: prints, for each milestone, a link that opens the video at that moment: `https://youtu.be/<id>?t=<seconds>`.
 - H-9 `highlights timeline [--before <s>] [--after <s>] [--format text|csv|json|edl]`: prints the pre-cut timeline (below). The defaults are 5 seconds before and 5 after.
 - H-10 `highlights remove <n>`: removes the n-th milestone as numbered by `list`.

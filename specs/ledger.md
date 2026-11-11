@@ -28,7 +28,7 @@ open 2026-01-01 Expenses:Groceries
 ```
 
 - L-1 `open <date> <account>` declares an account. Dates are `YYYY-MM-DD`.
-- L-2 A transaction starts with `<date> <description>` at the start of a line. Its postings follow on lines indented by at least one space: `<account>` then, after at least two spaces, an optional amount.
+- L-2 A transaction starts with `<date> <description>` at the start of a line. Its postings follow on lines indented by at least one space: `<account>` then, after whitespace, an optional amount. Account names contain no spaces.
 - L-3 At most one posting in a transaction may leave its amount out. Its amount is whatever makes the transaction sum to zero.
 
 ## Validation

@@ -1,4 +1,24 @@
 <Solution>
+  <Folder Name="/CharacterReviews/">
+    <Project Path="CharacterReviews/CharacterReviews.Core/CharacterReviews.Core.csproj" />
+    <Project Path="CharacterReviews/CharacterReviews.Tests/CharacterReviews.Tests.csproj" />
+    <Project Path="CharacterReviews/CharacterReviews.Web/CharacterReviews.Web.csproj" />
+  </Folder>
+  <Folder Name="/HighlightReel/">
+    <Project Path="HighlightReel/HighlightReel.Cli/HighlightReel.Cli.csproj" />
+    <Project Path="HighlightReel/HighlightReel.Core/HighlightReel.Core.csproj" />
+    <Project Path="HighlightReel/HighlightReel.Tests/HighlightReel.Tests.csproj" />
+  </Folder>
+  <Folder Name="/Ledger/">
+    <Project Path="Ledger/Ledger.Cli/Ledger.Cli.csproj" />
+    <Project Path="Ledger/Ledger.Core/Ledger.Core.csproj" />
+    <Project Path="Ledger/Ledger.Tests/Ledger.Tests.csproj" />
+  </Folder>
+  <Folder Name="/RayTracer/">
+    <Project Path="RayTracer/RayTracer.Cli/RayTracer.Cli.csproj" />
+    <Project Path="RayTracer/RayTracer.Core/RayTracer.Core.csproj" />
+    <Project Path="RayTracer/RayTracer.Tests/RayTracer.Tests.csproj" />
+  </Folder>
   <Project Path="../FunctionalLint/src/FunctionalLint.CodeFixes/FunctionalLint.CodeFixes.csproj" />
   <Project Path="../FunctionalLint/src/FunctionalLint/FunctionalLint.csproj" />
   <Project Path="Functional/Functional.csproj" />
