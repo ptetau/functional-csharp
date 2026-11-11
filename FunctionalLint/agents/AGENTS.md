@@ -22,6 +22,14 @@ Write it this way from the start:
   `TryGetValue`, `DefaultIfEmpty(0).Max()`, `GroupBy` before `ToDictionary`. Turn "missing" into an `Option`.
 - Say which culture you mean: `ToString("0.00", CultureInfo.InvariantCulture)`, `StringComparison.Ordinal`.
 - To report every problem (forms, file parsers), collect them with `Validation<TError, T>`, not `Result`.
+- A fold's running state is a tuple, not a record: `xs.Aggregate((Total: 0m, Seen: ImmutableList<T>.Empty), ...)`.
+  Tuples need no value equality, and `ImmutableList.Add` is O(log n) where an array copy is O(n).
+- `Result<Derived>` doesn't convert to `Result<Base>`: write `r.Map(x => (Base)x)`.
+
+In hot paths (a ray per pixel, a row per file):
+- Use `static` lambdas, so nothing is captured and nothing is allocated per call.
+- Call `ValueList`'s own `Aggregate`/`Any`/`All`, not LINQ through an interface, which boxes it.
+- Prefer `T?` for a per-item "maybe" over `Option<T>`, which is a class and allocates.
 - "One of these" is a C# 15 `closed record` (or a `union`). Consume it with a switch expression that lists
   every case, never `_`, so adding a case is a compile error until every switch handles it.
 - No `throw`: return a `Result`. No clock, random, I/O, console or current culture: take the value as a parameter.

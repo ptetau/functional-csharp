@@ -4,6 +4,32 @@ What building the four sample apps under FunctionalLint showed: where the lint g
 
 Each app has its own detailed log (`<App>/FINDINGS.md`). This file merges them, ranked by how much each problem cost. "Seen in" counts how many of the four apps hit it independently.
 
+## Status after round two
+
+Every finding below was acted on. The four apps were then updated to the stricter rules by a second round of agents,
+which found seven more problems (all fixed) and left six open items. Details are at the end.
+
+| Finding | Status |
+|---|---|
+| 1.1–1.4 Wrong auto-fixes | **Done.** heal never keeps a fix that adds a compiler error (it retries one fix at a time), and counts only real fixes. The FP0008, FP0003 and FP0004 fixers skip the unsafe cases. |
+| 2.1 Calls that throw | **Done**, new rule FP0015. Array/list indexers, overflow and casts are still out of scope. |
+| 2.2 Culture | **Done.** CA1304/1305/1309/1310/1311 are errors in core projects (FunctionalCore.globalconfig). |
+| 2.3 More mutable collections | **Done.** FP0005 covers addable collections in the standard namespaces, builders, streams, Utf8JsonWriter; FP0001 covers `ForEach`. |
+| 2.4 out/ref and in-place calls | **Done** (FP0002). |
+| 2.5 FP0012 on your own types | **Done**: records, readonly structs and `Math`. |
+| 2.6 Hidden warnings | **Done.** Warnings are errors in core projects, and heal runs the project's own analyzers. |
+| 2.7 PLINQ / Parallel | **Done** (FP0011, "runs work in an unpredictable order"). |
+| 2.8 `default(ImmutableArray)` | **Done.** `ValueList<T>` treats `default` as empty, and FP0014 steers records onto it. |
+| 3.1 Records with collections | **Done.** `ValueList<T>`, `ValueMap<TKey, TValue>` and new rule FP0014. |
+| 3.2 O(n²) folds | **Done.** `Result.All` is O(n), `Scan` added, AGENTS.md explains. HighlightReel `timeline` at 80k milestones: 22.8 s → 1.0 s. |
+| 3.3 Hot-path LINQ | **Done.** `ValueList` has allocation-free `Aggregate`/`Any`/`All`; AGENTS.md has a hot-path section. |
+| 4.1 Unions | **Done** with C# 15 `closed` records and FP0013. |
+| 4.2 Result covariance | **Documented** (AGENTS.md): `r.Map(x => (Base)x)`. |
+| 5.1–5.3 Library gaps | **Done.** `Validation<TError, T>`, `Option.Bind`/LINQ/`IfSome`/`All`, `Result.MapError`/`Switch`/`ToValidation`, `ToValueList`. |
+| 5.4 `Option` allocates | **Documented**: use `T?` in hot paths. |
+| 6.1–6.7 Noise and wording | **Done.** |
+| 7.1 Loop speed | **Partly.** heal.sh runs the built tool (about 5 s per check, from 6–8 s). A long-running check server would get it under a second. |
+
 ## The short version
 
 - **All four apps work and pass their specs.** 357 tests in all (Ledger 68, CharacterReviews 76, RayTracer 51, HighlightReel 162). The ray tracer renders the sample scene in 0.4 s against a 10 s target.
@@ -84,3 +110,36 @@ Fixed in the specs:
 - **Highlight reel H-7** printed list lines without the number that H-10's `remove <n>` needs. Now numbered.
 
 Left as each app chose (listed in the app logs): slug rules for non-ASCII names, the `/titles/new` route clash, tie-breaks for same-day reviews, the camera's handedness, how reflection depth is counted, output column widths, and what counts as "first used" after a removal.
+
+## Round two: updating the apps to the stricter rules
+
+The new rules flagged 52 problems in the four apps: 31 collections in records (FP0014), 19 calls that throw (FP0015)
+and 2 out/ref mutations. Agents fixed them and swapped in the new library types. All apps still match their specs,
+the ray tracer's output is byte-identical, and the test count went from 357 to 391.
+
+Real bugs the new rules found: a CharacterReviews page that crashed when a character's title was missing
+(`Titles.First(...)`), and record equality that was broken in every app (`reel1 == reel2` was always false).
+
+### Found and fixed
+
+| # | Finding | Fix |
+|---|---|---|
+| R1 | FP0014 flagged computed properties (`Parts => ...`), which take no part in record equality. | Only stored members count. |
+| R2 | FP0015 flagged calls that can't throw: `First`/`Min` on a `GroupBy` group, anything after `Append`/`Prepend`/`DefaultIfEmpty`, regex `match.Groups["name"]`, and `int` indexers on string-keyed collections. | All exempt. |
+| R3 | FP0002 flagged `string.Create(culture, $"...")`: the compiler passes its interpolation handler by `ref`. | Only `out`/`ref` to real variables count. |
+| R4 | FP0014 said "use ValueList" for dictionaries. | `ValueMap<TKey, TValue>` added; the message suggests it. |
+| R5 | `ValueList` wrote to JSON but threw reading it back. | A converter ships with `ValueList` and `ValueMap`. |
+| R6 | LINQ over `ValueList` boxed it: 92 MB per ray-tracer render instead of 2 MB. | Allocation-free instance `Aggregate`/`Any`/`All`/`Select`/`Where`. |
+| R7 | Missing: `ValueList.Slice` (list patterns), `Validation.MapErrors`/`ToOption`, `Result.ToValidation`, `Option.All`. | Added. |
+
+### Still open
+
+| # | Finding | Thoughts |
+|---|---|---|
+| O1 | FP0015 doesn't see guards: `d.ContainsKey(k) ? d : d.Add(k, v)` is flagged. | `SetItem` is the better form anyway; the message suggests it. |
+| O2 | FP0014 applies to private fold accumulators whose equality is never used. | AGENTS.md now says to use a tuple for fold state. |
+| O3 | Three-way outcomes (found / invalid / not found) mean writing a closed record by hand; CharacterReviews still nests `Result<Validation<...>>`. | Fine as a closed record; a generator could help. |
+| O4 | `Validation.Combine` over 3+ inputs nests tuples; no `Result.FirstOk`. | Small library additions. |
+| O5 | `First` over an infinite `Range` is flagged though it can't throw. | The rule can't know; rewriting with `FirstOrDefault` is clearer anyway. |
+| O6 | heal still takes about 5 s per check. | A check server (load the project once, re-check on each edit) would get it under a second. |
+

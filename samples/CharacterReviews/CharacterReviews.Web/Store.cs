@@ -16,7 +16,7 @@ public sealed class Store
     private static readonly JsonSerializerOptions Json = new()
     {
         WriteIndented = true,
-        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase), new ValueListConverter() },
+        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
     };
 
     private readonly string _path;
@@ -63,28 +63,5 @@ public sealed class Store
         var temp = path + ".tmp";
         File.WriteAllText(temp, JsonSerializer.Serialize(state, Json));
         File.Move(temp, path, overwrite: true);
-    }
-}
-
-/// <summary>
-/// System.Text.Json writes a ValueList as a JSON array but can't read one back: it's a read-only collection
-/// with no Add method. Read it as an ImmutableArray, which the serializer supports, and convert.
-/// </summary>
-internal sealed class ValueListConverter : JsonConverterFactory
-{
-    public override bool CanConvert(Type type) =>
-        type.IsGenericType && type.GetGenericTypeDefinition() == typeof(ValueList<>);
-
-    public override JsonConverter CreateConverter(Type type, JsonSerializerOptions options) =>
-        (JsonConverter)Activator.CreateInstance(typeof(Converter<>).MakeGenericType(type.GetGenericArguments()[0]))!;
-
-    private sealed class Converter<T> : JsonConverter<ValueList<T>>
-    {
-        // A struct converter is also handed JSON null; treat it like a missing list.
-        public override ValueList<T> Read(ref Utf8JsonReader reader, Type type, JsonSerializerOptions options) =>
-            reader.TokenType == JsonTokenType.Null ? default : JsonSerializer.Deserialize<ImmutableArray<T>>(ref reader, options);
-
-        public override void Write(Utf8JsonWriter writer, ValueList<T> value, JsonSerializerOptions options) =>
-            JsonSerializer.Serialize(writer, value.Items, options);
     }
 }
