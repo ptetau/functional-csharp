@@ -163,7 +163,7 @@ Two pieces help a coding agent work in the functional subset.
 
 The hook takes about 4 seconds on a small project, almost all of it loading the project. The analyzer itself takes about 0.3 s on a 200 KB file. The first run builds the checker, which takes longer.
 
-Other agents can use the same check: `dotnet FunctionalLint/tools/FunctionalLint.Heal/bin/Release/net10.0/FunctionalLint.Heal.dll --hook` reads `{"tool_input": {"file_path": "..."}}` on stdin and exits 2 with the problems on stderr.
+Other agents can use the same check: `dotnet FunctionalLint/tools/FunctionalLint.Heal/bin/Release/net11.0/FunctionalLint.Heal.dll --hook` reads `{"tool_input": {"file_path": "..."}}` on stdin and exits 2 with the problems on stderr.
 
 ## Run the tests
 

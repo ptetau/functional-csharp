@@ -3,6 +3,7 @@ using FunctionalLint.CodeFixes;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CodeActions;
 using Microsoft.CodeAnalysis.CodeFixes;
+using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Diagnostics;
 
 namespace FunctionalLint.Heal;
@@ -11,7 +12,9 @@ namespace FunctionalLint.Heal;
 /// <param name="Solution">The solution with every fix applied.</param>
 /// <param name="Fixed">How many problems each rule had fixed.</param>
 /// <param name="Remaining">Errors still left (compiler and FunctionalLint), plus FunctionalLint warnings.</param>
-public sealed record HealResult(Solution Solution, ImmutableSortedDictionary<string, int> Fixed, ImmutableArray<Diagnostic> Remaining);
+/// <param name="NotFixedBecause">Why no fixes were tried, if they weren't.</param>
+public sealed record HealResult(Solution Solution, ImmutableSortedDictionary<string, int> Fixed, ImmutableArray<Diagnostic> Remaining,
+    string? NotFixedBecause = null);
 
 /// <summary>
 /// Applies FunctionalLint's code fixes to a project, one rule at a time, entirely in memory.
@@ -34,9 +37,27 @@ public static class Healer
 
     private static readonly ImmutableArray<DiagnosticAnalyzer> Analyzers = [new FunctionalAnalyzer()];
 
+    /// <summary>
+    /// Parse with the newest language version this tool knows. The Roslyn package on NuGet can lag the
+    /// compiler in the SDK (C# 15 shipped as "preview" in Roslyn 5.9), and parsing new syntax with an older
+    /// language version misreads it: `closed record Shape;` would look like a field named `record`.
+    /// Only document text is ever written back, so this setting never reaches the project file.
+    /// </summary>
+    public static Project UseNewestLanguage(Project project) =>
+        project.ParseOptions is CSharpParseOptions options && options.LanguageVersion != LanguageVersion.Preview
+            ? project.WithParseOptions(options.WithLanguageVersion(LanguageVersion.Preview))
+            : project;
+
     public static async Task<HealResult> HealAsync(Project project, CancellationToken ct = default)
     {
+        project = UseNewestLanguage(project);
         var before = await DiagnoseAsync(project, ct);
+
+        // A fix computed on code we can't parse could rewrite the wrong thing. Report, don't touch.
+        var syntaxErrors = await SyntaxErrorsAsync(project, ct);
+        if (syntaxErrors > 0)
+            return new HealResult(project.Solution, ImmutableSortedDictionary<string, int>.Empty, Sorted(before),
+                $"{syntaxErrors} syntax error(s): fix those first, then run heal again.");
 
         // Fixing one rule can expose another (a class becomes a record, its setters are then FP0003),
         // so go round until nothing changes. Three passes is plenty in practice.
@@ -61,12 +82,19 @@ public static class Healer
             .Where(x => x.n > 0)
             .ToImmutableSortedDictionary(x => x.id, x => x.n);
 
-        var remaining = after
+        return new HealResult(project.Solution, fixedCounts, Sorted(after));
+    }
+
+    private static ImmutableArray<Diagnostic> Sorted(ImmutableArray<Diagnostic> diagnostics) =>
+        diagnostics
             .Where(d => d.Severity == DiagnosticSeverity.Error || IsOurs(d))
             .OrderBy(d => d.Location.SourceTree?.FilePath).ThenBy(d => d.Location.SourceSpan.Start)
             .ToImmutableArray();
 
-        return new HealResult(project.Solution, fixedCounts, remaining);
+    private static async Task<int> SyntaxErrorsAsync(Project project, CancellationToken ct)
+    {
+        var trees = await Task.WhenAll(project.Documents.Select(d => d.GetSyntaxTreeAsync(ct)));
+        return trees.Sum(t => t?.GetDiagnostics(ct).Count(d => d.Severity == DiagnosticSeverity.Error) ?? 0);
     }
 
     /// <summary>Compiler errors plus FunctionalLint's diagnostics, using the project's own config (.editorconfig, .globalconfig).</summary>

@@ -137,7 +137,9 @@ public class CoreTests
     public void C9_average_rounds_half_away_from_zero_to_one_decimal(int[] ratings, double expected)
     {
         var reviews = ratings.Select((r, i) => new Review(i + 1, "t", "c", "x", r, "", Day1)).ToImmutableArray();
-        Assert.Equal(Option.Some((decimal)expected), Queries.Average(reviews));
+        // Attributes can't hold decimals, and since .NET 11 (decimal)1.9 keeps the double's exact binary value
+        // (1.8999999999999999...). Round to the one decimal place being tested to get the intended value.
+        Assert.Equal(Option.Some(Math.Round((decimal)expected, 1)), Queries.Average(reviews));
     }
 
     [Fact]

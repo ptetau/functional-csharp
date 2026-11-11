@@ -64,13 +64,16 @@ static async Task<(int Code, string Report)> Run(string path, bool checkOnly, st
         return (3, report.ToString());
     }
 
+    // Only edited document text is written back. Healing also changes the language version it parses with
+    // (see Healer.UseNewestLanguage), and that must never reach the project.
     var solution = workspace.CurrentSolution;
     var fixedTotals = new SortedDictionary<string, int>();
     var remaining = new List<(Diagnostic Diagnostic, bool Fixable)>();
+    var notFixed = new List<string>();
 
     foreach (var id in functional.Select(p => p.Id))
     {
-        var project = solution.GetProject(id)!;
+        var project = Healer.UseNewestLanguage(solution.GetProject(id)!);
         if (checkOnly)
         {
             var found = await Healer.DiagnoseAsync(project);
@@ -80,7 +83,9 @@ static async Task<(int Code, string Report)> Run(string path, bool checkOnly, st
         }
 
         var result = await Healer.HealAsync(project);
-        solution = result.Solution;
+        foreach (var changed in result.Solution.GetChanges(project.Solution).GetProjectChanges().SelectMany(c => c.GetChangedDocuments()))
+            solution = solution.WithDocumentText(changed, await result.Solution.GetDocument(changed)!.GetTextAsync());
+        if (result.NotFixedBecause is { } why) notFixed.Add($"{project.Name}: not fixed, {why}");
         foreach (var (rule, n) in result.Fixed) fixedTotals[rule] = fixedTotals.GetValueOrDefault(rule) + n;
         remaining.AddRange(result.Remaining.Select(d => (d, false)));
     }
@@ -94,7 +99,8 @@ static async Task<(int Code, string Report)> Run(string path, bool checkOnly, st
     if (!checkOnly)
     {
         report.WriteLine("== Auto-fixed");
-        if (fixedTotals.Count == 0) report.WriteLine("  nothing");
+        notFixed.ForEach(line => report.WriteLine("  " + line));
+        if (fixedTotals.Count == 0 && notFixed.Count == 0) report.WriteLine("  nothing");
         foreach (var (rule, n) in fixedTotals)
             report.WriteLine($"  {rule} x{n}. Next time: {Healer.Habits.GetValueOrDefault(rule, "")}");
         report.WriteLine();

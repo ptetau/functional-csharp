@@ -5,7 +5,7 @@
 set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 tool="$here/../tools/FunctionalLint.Heal"
-dll="$tool/bin/Release/net10.0/FunctionalLint.Heal.dll"
+dll="$tool/bin/Release/net11.0/FunctionalLint.Heal.dll"
 
 # Build the checker the first time, and again whenever FunctionalLint's own source changes.
 if [[ ! -f "$dll" ]] || [[ -n "$(find "$here/../src" "$tool" -name '*.cs' -newer "$dll" -not -path '*/obj/*' -print -quit)" ]]; then

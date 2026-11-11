@@ -21,7 +21,7 @@ public class HealerTests
             .AddProject(ProjectInfo.Create(projectId, VersionStamp.Default, "Core", "Core", LanguageNames.CSharp,
                 compilationOptions: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary,
                     nullableContextOptions: NullableContextOptions.Enable),
-                parseOptions: new CSharpParseOptions(LanguageVersion.Latest),
+                parseOptions: new CSharpParseOptions(Lint.CSharp15),
                 metadataReferences: references))
             .AddDocument(documentId, "Orders.cs", SourceText.From(source), filePath: "/src/Orders.cs");
 
@@ -102,6 +102,35 @@ public class HealerTests
         Assert.Empty(result.Fixed);
         Assert.Empty(result.Remaining);
         Assert.Contains("public class Old", await Text(result, doc));
+    }
+
+    [Fact]
+    public async Task Leaves_C_sharp_15_code_alone()
+    {
+        var source = """
+            public closed record Shape;
+            public sealed record Circle(double Radius) : Shape;
+            public static class Use { public static double R(Shape s) => s switch { Circle c => c.Radius }; }
+            """;
+        var (project, doc) = await Load(source);
+
+        var result = await Healer.HealAsync(project);
+
+        Assert.Equal(source, await Text(result, doc));
+        Assert.Empty(result.Remaining);
+    }
+
+    [Fact]
+    public async Task Does_not_fix_a_file_it_cannot_parse()
+    {
+        var source = "public class Order { public int Id { get; set; }";
+        var (project, doc) = await Load(source);
+
+        var result = await Healer.HealAsync(project);
+
+        Assert.Equal(source, await Text(result, doc));
+        Assert.Empty(result.Fixed);
+        Assert.Contains("syntax error", result.NotFixedBecause);
     }
 
     [Fact]

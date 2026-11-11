@@ -26,7 +26,15 @@ public static class Lint
     public const string AdapterAttribute =
         "public sealed class ImperativeAdapterAttribute : System.Attribute { }";
 
-    public static readonly ReferenceAssemblies References = ReferenceAssemblies.Net.Net80;
+    // .NET 11, so tests can use C# 15 (closed types, unions). The testing package has no Net110 shortcut yet.
+    public static readonly ReferenceAssemblies References =
+        new("net11.0", new PackageIdentity("Microsoft.NETCore.App.Ref", "11.0.0"), Path.Combine("ref", "net11.0"));
+
+    // Roslyn 5.9 on NuGet only knows C# 15 as "preview". The compiler in the .NET 11 SDK calls it 15.
+    public static readonly LanguageVersion CSharp15 = LanguageVersion.Preview;
+
+    private static Solution UseCSharp15(Solution solution, ProjectId id) =>
+        solution.WithProjectParseOptions(id, ((CSharpParseOptions)solution.GetProject(id)!.ParseOptions!).WithLanguageVersion(CSharp15));
 
     /// <summary>Runs the analyzer and checks the marked diagnostics are exactly the ones reported.</summary>
     public static Task Verify(string source, string? config = null)
@@ -36,6 +44,7 @@ public static class Lint
             TestCode = source,
             ReferenceAssemblies = References,
         };
+        test.SolutionTransforms.Add(UseCSharp15);
         AddConfig(test.TestState, config);
         return test.RunAsync();
     }
@@ -50,6 +59,7 @@ public static class Lint
             FixedCode = after,
             ReferenceAssemblies = References,
         };
+        test.SolutionTransforms.Add(UseCSharp15);
         AddConfig(test.TestState, config);
         AddConfig(test.FixedState, config);
         // By default the framework ignores markup in FixedCode for IDs the fix handles. Some diagnostics
@@ -81,7 +91,7 @@ public static class Lint
         OutputKind kind = OutputKind.DynamicallyLinkedLibrary, bool logTime = false, Action<Exception>? onCrash = null)
     {
         var references = await References.ResolveAsync(LanguageNames.CSharp, CancellationToken.None);
-        var tree = CSharpSyntaxTree.ParseText(source, new CSharpParseOptions(LanguageVersion.Latest), path: "/0/Test0.cs");
+        var tree = CSharpSyntaxTree.ParseText(source, new CSharpParseOptions(CSharp15), path: "/0/Test0.cs");
         var compilation = CSharpCompilation.Create("Test", new[] { tree }, references,
             new CSharpCompilationOptions(kind, nullableContextOptions: NullableContextOptions.Enable));
 
