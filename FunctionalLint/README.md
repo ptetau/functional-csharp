@@ -99,7 +99,7 @@ For a one-off, use `#pragma warning disable FP0002` around the line.
 
 ## Fix and learn: the agent loop
 
-Some rules have a mechanical fix. `heal.sh` builds the project, applies those fixes, builds again, and prints what it fixed, the habit that avoids each one, and what's left:
+Some rules have a mechanical fix. `heal.sh` loads the project once, applies those fixes, and prints what it fixed, the habit that avoids each one, and what's left:
 
 ```
 $ FunctionalLint/heal.sh src/Core/Core.csproj
@@ -109,20 +109,45 @@ $ FunctionalLint/heal.sh src/Core/Core.csproj
   FP0008 x2. Next time: Take and return IReadOnlyList / IReadOnlyDictionary / ImmutableArray, never List or IList.
   FP0010 x1. Next time: Make async methods return Task, never void.
 
-== Remaining: 3 error(s) to fix by hand
-Orders.cs(19,9): error FP0001: 'foreach' loops are not allowed. Use LINQ, Aggregate or recursion instead.
+== Remaining: 4 to fix by hand (5.4s)
+Orders.cs(20,9): error FP0001: 'foreach' loops are not allowed. Use LINQ, Aggregate or recursion instead.
 ...
 ```
 
-It exits 0 only when the project builds clean, so it works as a pre-commit hook or an agent's "am I done?" check.
-
-When to run what:
-- **After each file write:** `dotnet build --no-restore`. The analyzer adds little; on a 200 KB file it takes about 0.3 s. The compiler is most of the time.
-- **Before commit:** `heal.sh`. Each `dotnet format` pass loads the whole project, so allow 5-10 seconds per fixable rule that fired.
+- `heal.sh <project or solution> --check` reports without changing anything, and marks each problem it could fix `[auto-fixable]`.
+- Exit codes: 0 clean, 1 problems left, 2 couldn't run. So it works as a pre-commit hook or an agent's "am I done?" check.
+- Given a solution, it only touches projects that import `FunctionalCore.props` (or the package).
 
 Auto-fixes only make changes that keep the code's meaning. Where that isn't possible (loops, mutation, throws, side effects) the message says what to write instead. If a fix makes other code stop compiling, that code was mutating something it shouldn't, and the compiler now points at it.
 
 To fix things one at a time in the IDE, use the light bulb on the error.
+
+## Agents
+
+Two pieces help a coding agent work in the functional subset.
+
+**Tell it the rules up front.** Copy [`agents/AGENTS.md`](agents/AGENTS.md) into your repository's `AGENTS.md` or `CLAUDE.md`. It's a one-screen summary of how to write functional core code and what to do when the lint complains.
+
+**Check every edit.** [`agents/claude-code-hook.sh`](agents/claude-code-hook.sh) is a Claude Code hook. After Claude edits a `.cs` file in a functional core project, it checks that project and hands any problems straight back to Claude. Problems in the edited file come first, with `[auto-fixable]` marks. Files in other projects are ignored. Add it to `.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          { "type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/FunctionalLint/agents/claude-code-hook.sh", "timeout": 120 }
+        ]
+      }
+    ]
+  }
+}
+```
+
+The hook takes about 4 seconds on a small project, almost all of it loading the project. The analyzer itself takes about 0.3 s on a 200 KB file. The first run builds the checker, which takes longer.
+
+Other agents can use the same check: `dotnet FunctionalLint/tools/FunctionalLint.Heal/bin/Release/net10.0/FunctionalLint.Heal.dll --hook` reads `{"tool_input": {"file_path": "..."}}` on stdin and exits 2 with the problems on stderr.
 
 ## Run the tests
 
@@ -135,7 +160,7 @@ The tests are laid out so it's clear where a new case goes:
 | Folder | Checks |
 |--------|--------|
 | `Rules/` | One file per rule: what it reports, exactly where, and what it allows. |
-| `Fixes/` | Each code fix: before and after, including the cases it deliberately leaves alone. |
+| `Fixes/` | Each code fix: before and after, including the cases it deliberately leaves alone. Also the heal engine and the agent hook. |
 | `Guidance/MessageTests.cs` | The exact text of every message, and that each one names the problem and the remedy on one short line. |
 | `Guidance/RuleCatalogTests.cs` | Rules are well formed, and the code, README, rule docs and tests agree. |
 | `Guidance/RobustnessTests.cs` | Half-written code never crashes the analyzer, and a large file is analysed quickly. |
