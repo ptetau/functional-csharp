@@ -24,13 +24,13 @@ samples/<App>/
   FINDINGS.md     Where the lint helped or hurt while building this app.
 ```
 
-[`Functional/`](Functional) is shared by every core: `Result<T>`, `Option<T>`, `Error` and `[ImperativeAdapter]`.
+[`Functional/`](Functional) is shared by every core: `Result<T>`, `Option<T>`, `Error` and `[ImperativeAdapter]`. Everything targets .NET 11 and C# 15.
 
 ## The rules for building them
 
 - Logic goes in the core. The shell only does I/O and wiring.
 - Don't get past a lint error with `#pragma`, `[ImperativeAdapter]` or by moving logic into the shell. If the functional way is genuinely awkward, write it the functional way anyway and record the friction in `FINDINGS.md`.
-- Consume `Result` and `Option` with `Match`, `Map` and `Bind`. A `switch` over their cases can't be exhaustive in C# (see FINDINGS.md).
+- Model choices as C# 15 `closed` records and consume them with switch expressions that list every case (FP0013 forbids `_` arms). `Result` and `Option` are closed records too, with `Map`, `Bind` and `Match` for convenience.
 
 ## Run
 

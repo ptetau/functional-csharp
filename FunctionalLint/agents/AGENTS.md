@@ -14,6 +14,8 @@ Write it this way from the start:
 - No reassignment: give each new value a new name, or use `with`.
 - Collections are `ImmutableArray<T>` / `ImmutableDictionary<,>`; signatures take `IReadOnlyList<T>` and friends.
   `list.Add(x)` returns a new list: always use the result.
+- "One of these" is a C# 15 `closed record` (or a `union`). Consume it with a switch expression that lists
+  every case, never `_`, so adding a case is a compile error until every switch handles it.
 - No `throw`: return a `Result`. No clock, random, I/O or console: take the value as a parameter.
 - Anything imperative (legacy code, I/O, exceptions) goes in a type marked `[ImperativeAdapter]`.
 

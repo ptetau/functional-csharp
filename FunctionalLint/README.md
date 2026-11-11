@@ -30,6 +30,29 @@ These are still allowed:
 - Calling methods with `out` parameters and assigning your own `out` parameters, so `TryParse` style APIs work.
 - Top-level statements (they're host code).
 
+## Requirements
+
+.NET 11 SDK and C# 15 (the default for `net11.0`). The repository's `global.json` pins the SDK.
+C# 15 matters here: `closed` types and `union` types let the compiler check that a switch handles every case.
+
+## Choices: closed records and unions
+
+Model "one of these" as a C# 15 `closed` record, and consume it with a switch expression that lists every case:
+
+```csharp
+public closed record Payment;
+public sealed record Card(string Last4) : Payment;
+public sealed record Cash : Payment;
+
+public static string Describe(Payment p) => p switch
+{
+    Card c => $"card ending {c.Last4}",
+    Cash => "cash",
+};
+```
+
+Add a `Voucher` case later and every switch that doesn't handle it stops compiling (CS8509, an error under the props file). FP0013 stops the two ways around that: a `_` arm, and a switch statement. A `union Pet(Cat, Dog)` works the same way when the cases already exist as separate types.
+
 ## Set up a core project
 
 Import the shared props file into each functional core project:
@@ -41,7 +64,7 @@ Import the shared props file into each functional core project:
 The props file does four things:
 - Adds the analyzer and its code fixes.
 - Turns on nullable reference types and makes nullable warnings errors.
-- Makes non-exhaustive switch expressions (CS8509) errors, so unions and closed hierarchies are checked properly.
+- Makes non-exhaustive switch expressions (CS8509) errors, so a switch over a `closed` type, a `union` or an enum must handle every case.
 - Loads `functional.globalconfig`, where you set the legacy namespaces and any extra side-effecting APIs.
 
 Leave the props file out of host, test and adapter-only projects.
@@ -57,7 +80,7 @@ dotnet pack src/FunctionalLint.Package -c Release -o artifacts
 Push it to your feed, then reference it from each functional core project:
 
 ```xml
-<PackageReference Include="FunctionalLint" Version="0.2.0" PrivateAssets="all" />
+<PackageReference Include="FunctionalLint" Version="0.3.0" PrivateAssets="all" />
 ```
 
 The package carries the analyzer, the code fixes and the same compiler settings as the props file. It doesn't include `functional.globalconfig`; put your `functional_lint.*` settings in your own `.globalconfig` or `.editorconfig`.
@@ -77,7 +100,7 @@ Define the attribute once. The analyzer matches it by name.
 public sealed class ImperativeAdapterAttribute : Attribute { }
 ```
 
-An adapter takes legacy services in its constructor. Its public members return only functional types, which FP0009 checks.
+An adapter takes legacy services in its constructor. (The examples use `Result`, `Error` and `Option` from [`samples/Functional`](../samples/Functional), a small library you can copy.) Its public members return only functional types, which FP0009 checks.
 
 ```csharp
 [ImperativeAdapter]
@@ -87,12 +110,11 @@ public sealed class Orders(OrderService service)
     {
         try
         {
-            return new Ok<ImmutableArray<Order>>(
-                service.GetOpenOrders().Select(Order.From).ToImmutableArray());
+            return Result.Ok(service.GetOpenOrders().Select(Order.From).ToImmutableArray());
         }
         catch (SqlException ex)
         {
-            return new Unavailable(ex.Message);
+            return new Error("unavailable", ex.Message);
         }
     }
 }

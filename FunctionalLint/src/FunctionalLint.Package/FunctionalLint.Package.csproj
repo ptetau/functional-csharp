@@ -9,7 +9,7 @@
   <PropertyGroup>
     <TargetFramework>netstandard2.0</TargetFramework>
     <PackageId>FunctionalLint</PackageId>
-    <Version>0.2.0</Version>
+    <Version>0.3.0</Version>
     <Description>Roslyn analyzer and code fixes that keep a C# project to a strict functional subset: no loops, mutation, classes, throws or side effects.</Description>
     <PackageTags>roslyn;analyzer;functional;immutability</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>

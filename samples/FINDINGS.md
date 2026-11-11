@@ -43,11 +43,11 @@ Each app has its own detailed log (`<App>/FINDINGS.md`). This file merges them, 
 | 3.2 | 3 | **`Aggregate` + `ImmutableArray.Add` is O(n²)**, and `Functional.Result.All` uses it. HighlightReel's `list` took 23 s at 80k milestones; a ray tracer pixel buffer built that way took 3.5 s and 26.5 GB. FP0012's "always use the result" pushes people toward it. | Rewrite `Result.All`. Add `Scan` to `Functional`. Recommend `Select(...).ToImmutableArray()` or `ImmutableList` for folds, and say why in AGENTS.md. |
 | 3.3 | 1 | **LINQ in a hot path** was about 20× slower than the maths it wrapped and allocated 230 MB per render. Static lambdas with tuple accumulators fixed it, but nothing says how. | A short performance section in AGENTS.md. |
 
-## 4. Unions (the biggest everyday friction)
+## 4. Unions (the biggest everyday friction) — resolved by C# 15
 
 | # | Seen in | Finding | Proposed fix |
 |---|---|---|---|
-| 4.1 | 4 | **A `switch` over a closed record hierarchy is never exhaustive to C#,** so CS8509 (an error under the props) demands `_ => throw`, which FP0007 bans. Every union needs a hand-written abstract `Match` plus an override in each case: 25 lines for Ledger's five commands. The README's claim that CS8509 checks "closed hierarchies" is wrong. | A **diagnostic suppressor** that silences CS8509 when a switch covers every nested case of a hierarchy with a private constructor. Then a plain `switch` works and adding a case makes it an error again. |
+| 4.1 | 4 | **A `switch` over a closed record hierarchy is never exhaustive to C#,** so CS8509 (an error under the props) demands `_ => throw`, which FP0007 bans. Every union needs a hand-written abstract `Match` plus an override in each case: 25 lines for Ledger's five commands. The README's claim that CS8509 checks "closed hierarchies" is wrong. | **Done.** Moved to .NET 11 / C# 15: `closed` records and `union` types make switch expressions exhaustive, every union in `Functional` and the samples is now a closed record, and new rule FP0013 forbids `_` arms and switch statements over them. |
 | 4.2 | 3 | `Result<T>` isn't covariant, so `Result<Command.Balance>` won't convert to `Result<Command>` without a cast in every case. | Document the cast, or add an `Upcast` helper. |
 
 ## 5. Gaps in the shared `Functional` library
@@ -69,7 +69,7 @@ Each app has its own detailed log (`<App>/FINDINGS.md`). This file merges them, 
 | 6.4 | 2 | FP0008 on a private field says "lets callers change the collection". | Field-specific wording. |
 | 6.5 | 2 | FP0008's message suggests `ImmutableArray<T>` but the fix writes `IReadOnlyList<T>`. | Make the message match the fix, or the fix match the message. |
 | 6.6 | 3 | heal's footer ("each message says what to write instead") is wrong for compiler errors, and CS8509 gets no hint about `Match`. | Footer only when FP errors remain; add a CS8509 hint (or 4.1 removes the need). |
-| 6.7 | 1 | FP0007's doc and the README use `Ok<T>`, `NotFound`, `Unavailable`, none of which exist in `Functional`. | Use the real types. |
+| 6.7 | 1 | FP0007's doc and the README use `Ok<T>`, `NotFound`, `Unavailable`, none of which exist in `Functional`. | **Done.** The examples now use the real `Result`/`Error`. |
 
 ## 7. Speed of the loop
 
