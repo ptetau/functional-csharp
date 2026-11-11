@@ -1,0 +1,13 @@
+is_global = true
+
+# Namespaces holding existing imperative code. Functional code may only reach
+# them through an [ImperativeAdapter]. Comma-separated. Sub-namespaces included.
+functional_lint.legacy_namespaces = MyApp.Legacy
+
+# Extra side-effecting APIs, on top of the built-in list (clock, Guid, Random,
+# Console, Environment, file I/O, HttpClient, Process, Stopwatch, Sleep, Delay).
+# A whole type ("Some.Namespace.Type") or one member ("Some.Namespace.Type.Member").
+functional_lint.impure_apis =
+
+# Turn individual rules down here if you need to while migrating, e.g.
+# dotnet_diagnostic.FP0008.severity = warning

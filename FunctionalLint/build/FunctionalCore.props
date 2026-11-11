@@ -1,0 +1,26 @@
+<!--
+  Import this into every functional core project:
+
+    <Import Project="..\FunctionalLint\build\FunctionalCore.props" />
+
+  Leave it out of host, adapter-only and test projects.
+-->
+<Project>
+
+  <PropertyGroup>
+    <Nullable>enable</Nullable>
+    <!-- Nullable warnings and non-exhaustive switches become errors. -->
+    <WarningsAsErrors>$(WarningsAsErrors);nullable;CS8509</WarningsAsErrors>
+    <!-- CS8524 wants a discard arm for unnamed enum values. That arm would hide
+         missing cases, so turn it off and let CS8509 do the work. -->
+    <NoWarn>$(NoWarn);CS8524</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(MSBuildThisFileDirectory)..\src\FunctionalLint\FunctionalLint.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+    <GlobalAnalyzerConfigFiles Include="$(MSBuildThisFileDirectory)functional.globalconfig" />
+  </ItemGroup>
+
+</Project>
