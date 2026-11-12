@@ -23,7 +23,7 @@ A Roslyn analyzer that keeps a C# project functional. It reports errors at build
 | [FP0015](docs/rules/FP0015.md) | Calls that throw: `First`, `Single`, `Parse`, `dict[key]`, `ToDictionary`... | `FirstOrDefault`, list patterns, `TryParse`, `TryGetValue` | |
 | [FP0016](docs/rules/FP0016.md) | `#pragma warning disable`, `[SuppressMessage]`, `#nullable disable`; with a policy, also lowered rules and compiler checks, nullable or analyzers off, code marked generated, a second policy file, a core that stopped loading FunctionalLint | Fix what the rule reports | |
 | [FP0017](docs/rules/FP0017.md) | With a policy: `[ImperativeAdapter]` outside the policy's adapter namespaces | Pass the value in, or move the adapter | |
-| [FP0018](docs/rules/FP0018.md) | With a policy: references beyond the .NET base library and the policy's list | Move that code to a shell project | |
+| [FP0018](docs/rules/FP0018.md) | With a policy: using a library beyond the .NET base library and the policy's list | Move that code to a shell project | |
 
 Each rule's page has a before/after example. The build output links to it.
 
@@ -155,6 +155,7 @@ functional_lint.legacy_namespaces = none              # existing imperative code
 functional_lint.adapter_namespaces = Shop.Adapters    # where [ImperativeAdapter] may be used (FP0017)
 functional_lint.allowed_references = Functional       # what a core may reference besides .NET (FP0018)
 functional_lint.impure_apis =                         # extra side-effecting APIs (FP0011)
+functional_lint.gate_only =                           # cores only the gate checks (their build can't load the lint)
 ```
 
 It's a globalconfig, so `FunctionalCore.props` adds it to the build and the IDE shows the same results. The gate (`heal.sh --check`, the agent hook and CI) is what enforces it. The gate reads the policy itself, so its values win over any `.editorconfig`. Then for each core it reports (FP0016):
@@ -256,6 +257,18 @@ The tests are laid out so it's clear where a new case goes:
 | `Guidance/RobustnessTests.cs` | Half-written code never crashes the analyzer, and a large file is analysed quickly. |
 
 In test sources, `{|FP0001:text|}` means "expect FP0001 on exactly this text". Any diagnostic that isn't marked fails the test.
+
+## Its own rules
+
+FunctionalLint is checked by itself. The analyzer and code fixes are gate-only cores in [`functionallint.policy`](../functionallint.policy) (they can't load themselves at build time), and CI gates them with `heal.sh FunctionalLint/FunctionalLint.slnx --check`.
+- **The imperative part is in one file.** [`Adapters.cs`](src/FunctionalLint/Adapters.cs) holds the caches that parallel callbacks share (`Memo`), reporting each diagnostic (`Effects.ReportAll`), and `Sequences.Unfold` (walking up an operation's parents). Everything else follows the rules.
+- **`heal.sh` fixed its own analyzer first** (five signatures). The rest was rewritten by hand: loops became LINQ or recursion, lookup tables became `switch` expressions, and mutable sets became immutable ones.
+- **Dogfooding found four gaps in the lint**, all fixed:
+  - FP0004 flagged classes a library requires (an analyzer, a JSON converter).
+  - FP0018 flagged references nothing used.
+  - FP0018 treated .NET Standard's base library as outside references.
+  - A policy saved outside the repository (as CI does) couldn't find its projects.
+- **The heal tool isn't a core.** It loads MSBuild projects, writes files and serves a socket: it's the shell, the way the sample apps' CLIs and web app are.
 
 ## What it can't catch
 

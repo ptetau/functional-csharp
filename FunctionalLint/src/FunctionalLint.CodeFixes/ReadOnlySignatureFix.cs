@@ -21,15 +21,13 @@ public sealed class ReadOnlySignatureFix : CodeFixProvider
 {
     // Mutable type (metadata name) -> read-only interface. All live in System.Collections.Generic,
     // so swapping the simple name keeps whatever using or qualification the code already had.
-    private static readonly Dictionary<string, string> ReadOnlyFor = new()
+    private static string? ReadOnlyFor(string metadataName) => metadataName switch
     {
-        ["System.Collections.Generic.IList`1"] = "IReadOnlyList",
-        ["System.Collections.Generic.List`1"] = "IReadOnlyList",
-        ["System.Collections.Generic.ICollection`1"] = "IReadOnlyCollection",
-        ["System.Collections.Generic.IDictionary`2"] = "IReadOnlyDictionary",
-        ["System.Collections.Generic.Dictionary`2"] = "IReadOnlyDictionary",
-        ["System.Collections.Generic.ISet`1"] = "IReadOnlySet",
-        ["System.Collections.Generic.HashSet`1"] = "IReadOnlySet",
+        "System.Collections.Generic.IList`1" or "System.Collections.Generic.List`1" => "IReadOnlyList",
+        "System.Collections.Generic.ICollection`1" => "IReadOnlyCollection",
+        "System.Collections.Generic.IDictionary`2" or "System.Collections.Generic.Dictionary`2" => "IReadOnlyDictionary",
+        "System.Collections.Generic.ISet`1" or "System.Collections.Generic.HashSet`1" => "IReadOnlySet",
+        _ => null,
     };
 
     public override ImmutableArray<string> FixableDiagnosticIds { get; } =
@@ -60,19 +58,19 @@ public sealed class ReadOnlySignatureFix : CodeFixProvider
         var candidates = typeSyntax.DescendantNodesAndSelf().OfType<GenericNameSyntax>()
             .Select(name => (Name: name, Replacement: Replacement(model, name)))
             .Where(s => s.Replacement is not null)
-            .ToList();
+            .ToImmutableArray();
         var swaps = candidates
             .Where(s => !candidates.Any(outer => outer.Name != s.Name && outer.Name.Span.Contains(s.Name.Span)))
             .Where(s => OnlyInCovariantPositions(model, s.Name, typeSyntax))
-            .ToList();
-        if (swaps.Count == 0) return;
+            .ToImmutableArray();
+        if (swaps.IsEmpty) return;
 
         var title = $"Use {swaps[0].Replacement}<...>";
         context.RegisterCodeFix(CodeAction.Create(title, _ =>
         {
             // `rewritten` already carries any swaps nested inside this name, e.g. IDictionary<string, List<int>>.
             var newType = typeSyntax.ReplaceNodes(swaps.Select(s => s.Name), (original, rewritten) =>
-                rewritten.WithIdentifier(SyntaxFactory.Identifier(swaps.First(s => s.Name == original).Replacement!)
+                rewritten.WithIdentifier(SyntaxFactory.Identifier(swaps.FirstOrDefault(s => s.Name == original).Replacement!)
                     .WithTriviaFrom(original.Identifier)));
             return Task.FromResult(context.Document.WithSyntaxRoot(root.ReplaceNode(typeSyntax, newType)));
         }, equivalenceKey: diagnostic.Id), diagnostic);
@@ -83,7 +81,7 @@ public sealed class ReadOnlySignatureFix : CodeFixProvider
         if (model.GetSymbolInfo(name).Symbol is not INamedTypeSymbol type) return null;
         var original = type.OriginalDefinition;
         var metadataName = $"{original.ContainingNamespace.ToDisplayString()}.{original.MetadataName}";
-        if (!ReadOnlyFor.TryGetValue(metadataName, out var replacement)) return null;
+        if (ReadOnlyFor(metadataName) is not { } replacement) return null;
 
         // IReadOnlySet<T> only exists from .NET 5.
         var arity = original.Arity;
@@ -95,30 +93,19 @@ public sealed class ReadOnlySignatureFix : CodeFixProvider
     // Walks up from a mutable type to the declared type. Only steps that keep a conversion valid are allowed:
     // a type argument whose parameter is covariant (`out T`), a qualified name, a nullable or array type. Anything
     // else (a tuple element, an invariant type argument) would stop the old type converting to the new one.
-    private static bool OnlyInCovariantPositions(SemanticModel model, SyntaxNode name, SyntaxNode outermost)
-    {
-        var node = name;
-        while (node != outermost)
+    private static bool OnlyInCovariantPositions(SemanticModel model, SyntaxNode node, SyntaxNode outermost) =>
+        node == outermost || node.Parent switch
         {
-            switch (node.Parent)
-            {
-                case QualifiedNameSyntax or AliasQualifiedNameSyntax or NullableTypeSyntax or ArrayTypeSyntax:
-                    node = node.Parent;
-                    continue;
-                case TypeArgumentListSyntax { Parent: GenericNameSyntax generic } arguments:
-                    if (model.GetSymbolInfo(generic).Symbol is not INamedTypeSymbol type) return false;
-                    var index = arguments.Arguments.IndexOf((TypeSyntax)node);
-                    if (index < 0) return false;
-                    if (type.OriginalDefinition.TypeParameters[index].Variance != VarianceKind.Out
-                        && !IsAsyncResult(generic, type, outermost)) return false;
-                    node = generic;   // step over the argument list to the generic type that holds it
-                    continue;
-                default:
-                    return false;
-            }
-        }
-        return true;
-    }
+            QualifiedNameSyntax or AliasQualifiedNameSyntax or NullableTypeSyntax or ArrayTypeSyntax =>
+                OnlyInCovariantPositions(model, node.Parent!, outermost),
+            // Step over the argument list to the generic type that holds it, if this argument is covariant there.
+            TypeArgumentListSyntax { Parent: GenericNameSyntax generic } arguments =>
+                model.GetSymbolInfo(generic).Symbol is INamedTypeSymbol type
+                && arguments.Arguments.IndexOf((TypeSyntax)node) is var index && index >= 0
+                && (type.OriginalDefinition.TypeParameters[index].Variance == VarianceKind.Out || IsAsyncResult(generic, type, outermost))
+                && OnlyInCovariantPositions(model, generic, outermost),
+            _ => false,
+        };
 
     // `async Task<List<int>> F()`: the body returns the list itself, so `Task<IReadOnlyList<int>>` still compiles.
     private static bool IsAsyncResult(GenericNameSyntax generic, INamedTypeSymbol type, SyntaxNode outermost) =>

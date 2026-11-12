@@ -18,7 +18,7 @@ public class ServerTests
     [Fact]
     public async Task Keeps_a_project_loaded_and_sees_edits_and_new_files()
     {
-        var folder = Directory.CreateTempSubdirectory("heal-server").FullName;
+        var folder = TempFolder.Create("heal-server");
         var stop = new CancellationTokenSource();
         try
         {
@@ -151,7 +151,7 @@ public class ServerTests
     {
         // Core's setter would become init, which compiles in Core but breaks Host. Heal is given only Core.csproj,
         // so it has to find the solution to see Host.
-        var folder = Directory.CreateTempSubdirectory("heal-solution").FullName;
+        var folder = TempFolder.Create("heal-solution");
         try
         {
             var props = Path.Combine(Repo.Root, "build", "FunctionalCore.props");
@@ -203,7 +203,7 @@ public class ServerTests
     public async Task A_solution_that_only_mentions_a_similar_name_is_skipped()
     {
         // App.slnx lists App/MyCore.csproj, whose name contains "Core.csproj". Heal must still find and fix Core.
-        var folder = Directory.CreateTempSubdirectory("heal-decoy").FullName;
+        var folder = TempFolder.Create("heal-decoy");
         try
         {
             var props = Path.Combine(Repo.Root, "build", "FunctionalCore.props");
@@ -236,7 +236,7 @@ public class ServerTests
     public async Task A_policy_core_that_stopped_loading_FunctionalLint_is_still_checked_and_reported()
     {
         // The project file lost its FunctionalCore.props import, which would silently switch every check off.
-        var folder = Directory.CreateTempSubdirectory("heal-policy").FullName;
+        var folder = TempFolder.Create("heal-policy");
         try
         {
             File.WriteAllText(Path.Combine(folder, "functionallint.policy"), "is_global = true\nfunctional_lint.cores = Core/Core.csproj\n");

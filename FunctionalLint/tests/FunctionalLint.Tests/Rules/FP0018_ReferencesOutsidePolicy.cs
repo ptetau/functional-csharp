@@ -16,7 +16,7 @@ public class FP0018_ReferencesOutsidePolicy
     // signs it with the key of .NET's own assemblies.
     private sealed record Library(string Name, string? Path = null, bool DotNetKey = false);
 
-    // A core that references its base library plus the given libraries. Returns the FP0018 messages.
+    // A core that references its base library plus the given libraries, and calls each one. Returns the FP0018 messages.
     private static async Task<string[]> Findings(string? allowed, ReferenceAssemblies? framework = null, params Library[] libraries)
     {
         var references = await (framework ?? Lint.References).ResolveAsync(LanguageNames.CSharp, CancellationToken.None);
@@ -28,14 +28,14 @@ public class FP0018_ReferencesOutsidePolicy
             var options = new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary);
             if (library.DotNetKey) options = options.WithCryptoPublicKey(dotNetKey).WithPublicSign(true);
             var compilation = CSharpCompilation.Create(library.Name,
-                [CSharpSyntaxTree.ParseText($"namespace {library.Name} {{ public static class Api {{ }} }}")], references, options);
+                [CSharpSyntaxTree.ParseText($"namespace {library.Name} {{ public static class Api {{ public static int Query() => 1; }} }}")], references, options);
             if (library.Path is null) return compilation.ToMetadataReference();
             using var image = new System.IO.MemoryStream();
             Assert.True(compilation.Emit(image).Success);
             return MetadataReference.CreateFromImage(image.ToArray(), filePath: library.Path);
         }
 
-        var uses = string.Join(" ", libraries.Select((l, i) => $"static object M{i}() => typeof({l.Name}.Api);"));
+        var uses = string.Join(" ", libraries.Select((l, i) => $"static int M{i}() => {l.Name}.Api.Query();"));
         var core = CSharpCompilation.Create("Core", [CSharpSyntaxTree.ParseText($"public static class C {{ {uses} }}")],
             references.AddRange(libraries.Select(Reference)), new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
         var config = allowed is null ? "" : "functional_lint.allowed_references = " + allowed;
@@ -50,7 +50,7 @@ public class FP0018_ReferencesOutsidePolicy
     public async Task Libraries_outside_the_list_are_reported_and_the_base_library_is_not()
     {
         Assert.Equal(
-            ["'Acme.Db' isn't on this core's list of allowed references. Move the code that uses it to a shell project."],
+            ["'Api.Query' comes from 'Acme.Db', which isn't on this core's list of allowed references. Move the code that uses it to a shell project."],
             await Findings("Functional", libraries: OwnLibraries));
     }
 
@@ -66,7 +66,7 @@ public class FP0018_ReferencesOutsidePolicy
     public async Task A_netstandard_core_may_use_the_NETStandard_Library_pack()
     {
         Assert.Equal(
-            ["'Acme.Db' isn't on this core's list of allowed references. Move the code that uses it to a shell project."],
+            ["'Api.Query' comes from 'Acme.Db', which isn't on this core's list of allowed references. Move the code that uses it to a shell project."],
             await Findings("none", ReferenceAssemblies.NetStandard.NetStandard20, new Library("Acme.Db")));
     }
 
@@ -89,7 +89,7 @@ public class FP0018_ReferencesOutsidePolicy
             // In the real pack and signed with .NET's key: as far as a compilation can tell, part of .NET.
             new("Acme.InPack", System.IO.Path.Combine(pack, "Acme.InPack.dll"), DotNetKey: true),
         ]);
-        Assert.Equal(["Acme.Copied", "Acme.Signed", "Newtonsoft.Json"], found.Select(m => m.Split('\'')[1]).Order());
+        Assert.Equal(["Acme.Copied", "Acme.Signed", "Newtonsoft.Json"], found.Select(m => m.Split('\'')[3]).Order());
     }
 
     private sealed class GlobalConfig(string line) : AnalyzerConfigOptionsProvider

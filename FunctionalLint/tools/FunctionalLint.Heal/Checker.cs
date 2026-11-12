@@ -105,7 +105,8 @@ public static class Checker
 
     // What the gate adds for the project as a whole, beyond its diagnostics.
     private static IEnumerable<Diagnostic> ProjectGate(Project project) =>
-        !UsesFunctionalLint(project) && Policy.For(project)?.IsCore(project.FilePath) == true ? [Gate.MissingAnalyzer(project)] : [];
+        !UsesFunctionalLint(project) && Policy.For(project) is { } policy
+        && policy.IsCore(project.FilePath) && !policy.IsGateOnly(project.FilePath) ? [Gate.MissingAnalyzer(project)] : [];
 
     /// <summary>0 clean, 1 problems, 3 nothing uses FunctionalLint.</summary>
     public static async Task<(int Code, string Report)> CheckAsync(

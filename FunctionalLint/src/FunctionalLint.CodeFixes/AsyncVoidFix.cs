@@ -44,13 +44,14 @@ public sealed class AsyncVoidFix : CodeFixProvider
         context.RegisterCodeFix(CodeAction.Create("Return Task", _ =>
         {
             var task = SyntaxFactory.IdentifierName("Task").WithTriviaFrom(returnType);
-            var newRoot = root.ReplaceNode(returnType, task);
+            var replaced = root.ReplaceNode(returnType, task);
 
             var taskInScope = model.LookupNamespacesAndTypes(returnType.SpanStart, name: "Task")
                 .Any(s => s.ToDisplayString() == "System.Threading.Tasks.Task");
-            if (!taskInScope && newRoot is CompilationUnitSyntax unit)
-                newRoot = unit.AddUsings(SyntaxFactory.UsingDirective(SyntaxFactory.ParseName("System.Threading.Tasks"))
-                    .WithAdditionalAnnotations(Formatter.Annotation));
+            var newRoot = !taskInScope && replaced is CompilationUnitSyntax unit
+                ? unit.AddUsings(SyntaxFactory.UsingDirective(SyntaxFactory.ParseName("System.Threading.Tasks"))
+                    .WithAdditionalAnnotations(Formatter.Annotation))
+                : replaced;
 
             return Task.FromResult(context.Document.WithSyntaxRoot(newRoot));
         }, equivalenceKey: "FP0010"), context.Diagnostics[0]);

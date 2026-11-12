@@ -21,7 +21,8 @@ public sealed record Policy(
     ImmutableArray<string> LegacyNamespaces,
     ImmutableArray<string> AdapterNamespaces,
     ImmutableArray<string> AllowedReferences,
-    ImmutableArray<string> ImpureApis)
+    ImmutableArray<string> ImpureApis,
+    ImmutableArray<string> GateOnly)
 {
     public const string FileName = "functionallint.policy";
 
@@ -130,7 +131,7 @@ public sealed record Policy(
             : [];
 
         return new Policy(file, root ?? Path.GetDirectoryName(file)!, List("cores"), List("may_lower"), List("legacy_namespaces"), List("adapter_namespaces"),
-            List("allowed_references"), List("impure_apis"));
+            List("allowed_references"), List("impure_apis"), List("gate_only"));
     }
 
     private static string StripComment(string value)
@@ -140,11 +141,19 @@ public sealed record Policy(
     }
 
     /// <summary>True if the policy lists this project as a functional core (paths or globs, relative to the repository root).</summary>
-    public bool IsCore(string? projectPath)
+    public bool IsCore(string? projectPath) => Matches(Cores, projectPath);
+
+    /// <summary>
+    /// True for a core the gate checks but whose build can't load FunctionalLint: FunctionalLint's own projects,
+    /// which would have to analyze themselves. The gate doesn't ask them to import FunctionalCore.props.
+    /// </summary>
+    public bool IsGateOnly(string? projectPath) => Matches(GateOnly, projectPath);
+
+    private bool Matches(ImmutableArray<string> globs, string? projectPath)
     {
         if (projectPath is null) return false;
         var relative = Path.GetRelativePath(Root, Path.GetFullPath(projectPath)).Replace('\\', '/');
-        return Cores.Any(glob => Glob(glob).IsMatch(relative));
+        return globs.Any(glob => Glob(glob).IsMatch(relative));
     }
 
     private static readonly ConcurrentDictionary<string, Regex> Globs = new(StringComparer.Ordinal);

@@ -17,6 +17,23 @@ public class FP0004_Classes
         """);
 
     [Fact]
+    public Task Plug_ins_extending_a_library_abstract_class_are_allowed() => Verify("""
+        using System;
+        using System.Text.Json;
+        using System.Text.Json.Serialization;
+
+        public sealed class DateConverter : JsonConverter<DateOnly>
+        {
+            public override DateOnly Read(ref Utf8JsonReader reader, Type type, JsonSerializerOptions options) => default;
+            public override void Write(Utf8JsonWriter writer, DateOnly value, JsonSerializerOptions options) { }
+        }
+
+        public abstract class {|FP0004:Shape|} { }
+        public sealed class {|FP0004:Circle|} : Shape { }
+        public class {|FP0004:Plain|} : Exception { }
+        """);
+
+    [Fact]
     public Task A_partial_class_is_reported_once() => Verify("""
         public partial class {|FP0004:Split|} { }
         public partial class Split { }
