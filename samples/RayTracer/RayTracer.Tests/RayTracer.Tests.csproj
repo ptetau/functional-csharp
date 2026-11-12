@@ -22,4 +22,8 @@
     <Using Include="Xunit" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Compile Include="..\..\TestSupport\Fuzz.cs" Link="Fuzz.cs" />
+  </ItemGroup>
+
 </Project>

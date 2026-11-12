@@ -258,7 +258,7 @@ In test sources, `{|FP0001:text|}` means "expect FP0001 on exactly this text". A
 
 - **Mutating methods on library types.** `Array.Sort`, `Array.Fill` and similar are caught (FP0002), but a method that changes a mutable object from a library isn't. FP0005 and FP0008 keep most mutable collections out in the first place.
 - **Mutable objects in readonly fields**, such as a `static readonly JsonSerializerOptions`. `readonly` protects only the reference.
-- **Every way to throw.** FP0015 covers the common calls; indexers on arrays and lists, overflow and casts aren't covered.
+- **Every way to throw.** FP0015 covers the common calls; indexers on arrays and lists, overflow and casts aren't covered. Random-input tests find the rest: see [FP0015](docs/rules/FP0015.md#what-it-doesnt-cover).
 - **Mutation inside libraries you call.**
 - **Arrays in signatures.** Arrays are allowed, but writing to an element is flagged.
 
