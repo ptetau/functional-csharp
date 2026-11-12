@@ -100,6 +100,11 @@ public static class Server
         }
     }
 
+    /// <summary>Whether a server for this copy of the tool is answering, and its socket.</summary>
+    public static async Task<(bool Running, string? Socket)> StatusAsync() =>
+        Disabled || SocketPath is not { } path ? (false, null)
+        : (File.Exists(path) && await IsAliveAsync(path), path);
+
     /// <summary>
     /// Starts a server in the background unless one is running. It outlives this process. A socket file left
     /// by a server that was killed (SIGKILL can't be caught) is removed first, or no server would ever start again.

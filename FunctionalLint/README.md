@@ -16,7 +16,7 @@ A Roslyn analyzer that keeps a C# project functional. It reports errors at build
 | [FP0008](docs/rules/FP0008.md) | `IList<T>`, `ICollection<T>`, `IDictionary<,>`, `List<T>` etc. in signatures | `IReadOnlyList<T>`, `ImmutableArray<T>` | Yes |
 | [FP0009](docs/rules/FP0009.md) | Adapters with legacy types in their public signatures | Return functional types | |
 | [FP0010](docs/rules/FP0010.md) | `async void` | Return `Task` | Yes |
-| [FP0011](docs/rules/FP0011.md) | Clock, `Guid.NewGuid`, `Random`, `Console`, file I/O, `HttpClient`, current culture, parallel LINQ, indented JSON without `NewLine` and similar | An adapter, or pass the value in | Indented JSON |
+| [FP0011](docs/rules/FP0011.md) | Clock, `Guid.NewGuid`, `Random`, `Console`, file I/O, `HttpClient`, current culture, parallel LINQ, hidden `Environment.NewLine` (indented JSON/XML, `ReplaceLineEndings()`) and similar | An adapter, or pass the value in | Line endings |
 | [FP0012](docs/rules/FP0012.md) | Ignoring the result of `list.Add(x)`, LINQ, string, date or `Math` methods, or methods on your own records | Use the result: `var updated = list.Add(x)` | |
 | [FP0013](docs/rules/FP0013.md) | `_` arms and switch statements over enums, `closed` types and unions | A switch expression that lists every case | |
 | [FP0014](docs/rules/FP0014.md) | Collections that compare by reference (`ImmutableArray`, lists, arrays) inside records | `ValueList<T>` or another `[ValueEquality]` type | |
@@ -194,6 +194,8 @@ Two pieces help a coding agent work in the functional subset.
 - It also reloads when an `.editorconfig`, `.globalconfig` or `Directory.Build.*` file changes, and stops cleanly on SIGTERM.
 - Its socket is in a folder only you can open (`$XDG_RUNTIME_DIR/functionallint` or `~/.cache/functionallint`).
 - `FUNCTIONALLINT_NO_SERVER=1` turns it off (for example on CI).
+- `heal.sh --server-status` says whether it's running.
+- [`agents/hook-smoke-test.sh`](agents/hook-smoke-test.sh) `<a .cs file in a clean core project>` runs the hook and the server end to end: a clean edit, an edit with a loop (rejected), then its rewrite. CI runs it on Linux, macOS and Windows.
 - The first run of all also builds the heal tool, which takes longer.
 
 Other agents can use the same check: `dotnet FunctionalLint/tools/FunctionalLint.Heal/bin/Release/net11.0/FunctionalLint.Heal.dll --hook` reads `{"tool_input": {"file_path": "..."}}` on stdin and exits 2 with the problems on stderr.
@@ -204,7 +206,7 @@ Other agents can use the same check: `dotnet FunctionalLint/tools/FunctionalLint
 dotnet test
 ```
 
-CI (`.github/workflows/ci.yml`) runs these tests and the sample apps' tests on Linux, macOS and Windows for every pull request and every push to `main`. It also runs `heal.sh --check` on a sample project and packs the NuGet package.
+CI (`.github/workflows/ci.yml`) runs these tests and the sample apps' tests on Linux, macOS and Windows for every pull request and every push to `main`. It also runs `heal.sh --check` on a sample project, runs the agent hook and check server end to end, and packs the NuGet package.
 
 The tests are laid out so it's clear where a new case goes:
 

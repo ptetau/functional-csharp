@@ -46,5 +46,8 @@ jobs:
           FUNCTIONALLINT_NO_SERVER: "1"
         run: FunctionalLint/heal.sh samples/Ledger/Ledger.Core/Ledger.Core.csproj --check
 
+      - name: Agent hook and check server, end to end
+        shell: bash
+        run: FunctionalLint/agents/hook-smoke-test.sh samples/Ledger/Ledger.Core/Model.cs
       - name: Pack the NuGet package
         run: dotnet pack FunctionalLint/src/FunctionalLint.Package -c Release -o artifacts

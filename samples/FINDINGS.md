@@ -147,4 +147,5 @@ Real bugs the new rules found: a CharacterReviews page that crashed when a chara
 
 | # | Finding | Status |
 |---|---|---|
-| W1 | HighlightReel's JSON output used `\r\n` on Windows: `JsonSerializerOptions.WriteIndented` writes `Environment.NewLine` unless `NewLine` is set. FP0011 flags `Environment.NewLine` itself, but not this hidden use of it. | Fixed in the app (`NewLine = "\n"`). FP0011 now flags indented JSON options without `NewLine`, and heal adds it. |
+| W1 | HighlightReel's JSON output used `\r\n` on Windows: `JsonSerializerOptions.WriteIndented` writes `Environment.NewLine` unless `NewLine` is set. FP0011 flags `Environment.NewLine` itself, but not this hidden use of it. | Fixed in the app (`NewLine = "\n"`). FP0011 now flags indented JSON and XML options without a newline setting, and `ReplaceLineEndings()` with no argument; heal fixes all three. |
+| W2 | A live Claude Code trial (hook installed, no rules file) on a fresh core project: FP0014 told it to "Use ValueList<T>", which the project didn't have. | FP0014 now names the `[ValueEquality]` types the project can see, or says "a [ValueEquality] collection" and the docs point to `samples/Functional`. The trial otherwise worked: the hook failed an imperative edit, and Claude fixed all five problems in one edit. |

@@ -17,6 +17,12 @@ public class MessageTests
 {
     private const string LegacyConfig = "functional_lint.legacy_namespaces = Legacy";
 
+    // A project with its own [ValueEquality] types, like samples/Functional: FP0014 suggests them by name.
+    private const string ValueTypes =
+        "public sealed class ValueEqualityAttribute : System.Attribute { } " +
+        "[ValueEquality] public readonly record struct ValueList<T>; " +
+        "[ValueEquality] public readonly record struct ValueMap<TKey, TValue>; ";
+
     // (rule, code that triggers it, config, exact message)
     public static TheoryData<string, string, string?, string> Messages => new()
     {
@@ -74,11 +80,17 @@ public class MessageTests
             "'Random' has side effects. Call it from an [ImperativeAdapter], or pass the value in." },
         { "FP0011", "static class C { static string M() => System.Environment.NewLine; }", null,
             "'Environment.NewLine' depends on the machine it runs on. Call it from an [ImperativeAdapter], or pass the value in." },
+        { "FP0011", "static class C { static string M(string s) => s.ReplaceLineEndings(); }", null,
+            "'string.ReplaceLineEndings()' uses Environment.NewLine, which is \"\\r\\n\" on Windows. Use ReplaceLineEndings(\"\\n\") instead." },
+        { "FP0011", "static class C { static readonly System.Xml.XmlWriterSettings O = new() { Indent = true }; }", null,
+            "'XmlWriterSettings.Indent' writes Environment.NewLine, which is \"\\r\\n\" on Windows. Use NewLineChars = \"\\n\" in the same initializer." },
         { "FP0011", "static class C { static readonly System.Text.Json.JsonSerializerOptions O = new() { WriteIndented = true }; }", null,
             "'JsonSerializerOptions.WriteIndented' writes Environment.NewLine, which is \"\\r\\n\" on Windows. Use NewLine = \"\\n\" in the same initializer." },
         { "FP0014", "public sealed record Order(string Id, System.Collections.Immutable.ImmutableArray<string> Tags);", null,
+            "'ImmutableArray<string>' compares by reference, so equal 'Order' records won't be equal. Use a [ValueEquality] collection instead." },
+        { "FP0014", ValueTypes + "public sealed record Order(string Id, System.Collections.Immutable.ImmutableArray<string> Tags);", null,
             "'ImmutableArray<string>' compares by reference, so equal 'Order' records won't be equal. Use ValueList<T> instead." },
-        { "FP0014", "public sealed record Prices(System.Collections.Immutable.ImmutableDictionary<string, decimal> BySku);", null,
+        { "FP0014", ValueTypes + "public sealed record Prices(System.Collections.Immutable.ImmutableDictionary<string, decimal> BySku);", null,
             "'ImmutableDictionary<string, decimal>' compares by reference, so equal 'Prices' records won't be equal. Use ValueMap<TKey, TValue> instead." },
         { "FP0015", "using System.Linq; static class C { static int M(int[] xs) => xs.First(); }", null,
             "'First' throws when nothing matches. Use FirstOrDefault, or a list pattern such as 'is [var first, ..]' instead." },

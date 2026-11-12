@@ -261,12 +261,14 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
 
             start.RegisterOperationAction(GuardOp(AnalyzeLoop), OperationKind.Loop);
             start.RegisterOperationAction(GuardOp(AnalyzeIndentedWriter), OperationKind.ObjectCreation);
+            start.RegisterOperationAction(GuardOp(AnalyzeReplaceLineEndings), OperationKind.Invocation);
             start.RegisterOperationAction(GuardOp(AnalyzeGoto), OperationKind.Branch);
             start.RegisterOperationAction(GuardOp(AnalyzeLoopCall), OperationKind.Invocation);
             start.RegisterOperationAction(GuardOp(AnalyzeRefArgument), OperationKind.Argument);
             start.RegisterOperationAction(GuardOp(AnalyzeMutatingCall), OperationKind.Invocation);
             start.RegisterOperationAction(GuardOp(AnalyzeThrowingCall), OperationKind.Invocation, OperationKind.PropertyReference);
-            start.RegisterSymbolAction(GuardSymbol(AnalyzeRecordEquality), SymbolKind.NamedType);
+            var valueTypes = new Lazy<(string? List, string? Map)>(() => FindValueEqualityTypes(start.Compilation));
+            start.RegisterSymbolAction(GuardSymbol(ctx => AnalyzeRecordEquality(ctx, valueTypes)), SymbolKind.NamedType);
             start.RegisterOperationAction(GuardOp(AnalyzeAssignment),
                 OperationKind.SimpleAssignment,
                 OperationKind.CompoundAssignment,
@@ -761,7 +763,7 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
 
     // FP0014 Collections in records ---------------------------------------------
 
-    private static void AnalyzeRecordEquality(SymbolAnalysisContext ctx)
+    private static void AnalyzeRecordEquality(SymbolAnalysisContext ctx, Lazy<(string? List, string? Map)> valueTypes)
     {
         var type = (INamedTypeSymbol)ctx.Symbol;
         if (!type.IsRecord || type.IsImplicitlyDeclared) return;
@@ -796,9 +798,36 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
             var isMap = memberType!.AllInterfaces.Concat(memberType is INamedTypeSymbol n ? [n] : [])
                 .Any(i => i.OriginalDefinition.ToDisplayString() is "System.Collections.Generic.IReadOnlyDictionary<TKey, TValue>"
                     or "System.Collections.Generic.IDictionary<TKey, TValue>");
+            // Suggest a type the project can actually use; without one, the rule's docs show one to copy.
+            var suggestion = (isMap ? valueTypes.Value.Map : valueTypes.Value.List) ?? "a [ValueEquality] collection";
             ctx.ReportDiagnostic(Diagnostic.Create(ReferenceEqualityInRecord, member.Locations[0], Display(memberType), type.Name,
-                isMap ? "ValueMap<TKey, TValue>" : "ValueList<T>"));
+                suggestion));
         }
+    }
+
+    // The [ValueEquality] list and map types this compilation can see, in its own source or a non-framework reference.
+    // Names named ValueList / ValueMap win; otherwise any marked type with one (list) or two (map) type parameters.
+    private static (string? List, string? Map) FindValueEqualityTypes(Compilation compilation)
+    {
+        static bool Framework(IAssemblySymbol a) =>
+            a.Name.StartsWith("System", StringComparison.Ordinal) || a.Name.StartsWith("Microsoft", StringComparison.Ordinal)
+            || a.Name is "netstandard" or "mscorlib" or "WindowsBase";
+
+        static IEnumerable<INamedTypeSymbol> TypesIn(INamespaceSymbol ns) =>
+            ns.GetTypeMembers().Concat(ns.GetNamespaceMembers().SelectMany(TypesIn));
+
+        var marked = new[] { compilation.Assembly }
+            .Concat(compilation.SourceModule.ReferencedAssemblySymbols.Where(a => !Framework(a)))
+            .SelectMany(a => TypesIn(a.GlobalNamespace))
+            .Where(t => t.DeclaredAccessibility == Accessibility.Public || SymbolEqualityComparer.Default.Equals(t.ContainingAssembly, compilation.Assembly))
+            .Where(t => t.GetAttributes().Any(a => a.AttributeClass?.Name == "ValueEqualityAttribute"))
+            .ToList();
+
+        string? Pick(string name, int arity) =>
+            (marked.FirstOrDefault(t => t.Name == name && t.Arity == arity) ?? marked.FirstOrDefault(t => t.Arity == arity))
+                ?.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
+
+        return (Pick("ValueList", 1), Pick("ValueMap", 2));
     }
 
     // Collections compare by reference unless their type says otherwise with [ValueEquality] (matched by name,
@@ -1039,14 +1068,19 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
 
     private const string ImpureRemedy = "Call it from an [ImperativeAdapter], or pass the value in.";
 
-    // Diagnostic property telling the code fix to add `NewLine = "\n"` next to the flagged assignment.
+    // Diagnostic properties for the code fix: AddNewLineKey names the property to set to "\n" next to the flagged
+    // assignment; AddArgumentKey means "pass \"\n\" to the flagged call".
     public const string AddNewLineKey = "AddNewLine";
+    public const string AddArgumentKey = "AddNewLineArgument";
 
-    // Options whose indented output uses Environment.NewLine unless NewLine is set (.NET 9+): "\r\n" on Windows.
-    private static readonly (string Type, string Indent)[] IndentedWriters =
+    private const string WindowsNewLine = "which is \"\\r\\n\" on Windows";
+
+    // Options whose indented output uses Environment.NewLine unless the newline property is set: "\r\n" on Windows.
+    private static readonly (string Type, string Indent, string NewLine)[] IndentedWriters =
     {
-        ("System.Text.Json.JsonSerializerOptions", "WriteIndented"),
-        ("System.Text.Json.JsonWriterOptions", "Indented"),
+        ("System.Text.Json.JsonSerializerOptions", "WriteIndented", "NewLine"),
+        ("System.Text.Json.JsonWriterOptions", "Indented", "NewLine"),
+        ("System.Xml.XmlWriterSettings", "Indent", "NewLineChars"),
     };
 
     private static void AnalyzeIndentedWriter(OperationAnalysisContext ctx)
@@ -1054,22 +1088,34 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         var creation = (IObjectCreationOperation)ctx.Operation;
         if (creation.Type is not INamedTypeSymbol type || creation.Initializer is null) return;
         var name = type.ToDisplayString();
-        var indent = IndentedWriters.FirstOrDefault(w => w.Type == name).Indent;
-        if (indent is null || !type.GetMembers("NewLine").Any()) return;
+        var (_, indent, newLine) = IndentedWriters.FirstOrDefault(w => w.Type == name);
+        if (indent is null || !type.GetMembers(newLine).Any()) return;
 
         var assignments = creation.Initializer.Initializers.OfType<ISimpleAssignmentOperation>()
             .Select(a => (Name: (a.Target as IPropertyReferenceOperation)?.Property.Name, Assignment: a))
             .ToList();
-        if (assignments.Any(a => a.Name == "NewLine")) return;
+        if (assignments.Any(a => a.Name == newLine)) return;
 
         var indented = assignments.FirstOrDefault(a => a.Name == indent).Assignment;
         if (indented is null || indented.Value.ConstantValue is { HasValue: true, Value: false }) return;
 
         ctx.ReportDiagnostic(Diagnostic.Create(ImpureApi, indented.Syntax.GetLocation(),
-            ImmutableDictionary<string, string?>.Empty.Add(AddNewLineKey, "true"),
-            $"{type.Name}.{indent}",
-            "writes Environment.NewLine, which is \"\\r\\n\" on Windows",
-            "Use NewLine = \"\\n\" in the same initializer."));
+            ImmutableDictionary<string, string?>.Empty.Add(AddNewLineKey, newLine),
+            $"{type.Name}.{indent}", "writes Environment.NewLine, " + WindowsNewLine,
+            $"Use {newLine} = \"\\n\" in the same initializer."));
+    }
+
+    // `text.ReplaceLineEndings()` with no argument uses Environment.NewLine.
+    private static void AnalyzeReplaceLineEndings(OperationAnalysisContext ctx)
+    {
+        var call = (IInvocationOperation)ctx.Operation;
+        if (call.TargetMethod is not { Name: "ReplaceLineEndings", Parameters.Length: 0 } method
+            || method.ContainingType.SpecialType != SpecialType.System_String) return;
+
+        ctx.ReportDiagnostic(Diagnostic.Create(ImpureApi, call.Syntax.GetLocation(),
+            ImmutableDictionary<string, string?>.Empty.Add(AddArgumentKey, "true"),
+            "string.ReplaceLineEndings()", "uses Environment.NewLine, " + WindowsNewLine,
+            "Use ReplaceLineEndings(\"\\n\") instead."));
     }
 
     private sealed class ImpureApis
