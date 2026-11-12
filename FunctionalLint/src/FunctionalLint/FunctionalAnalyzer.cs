@@ -5,6 +5,7 @@ using System.Collections.Immutable;
 using System.Linq;
 using System.Reflection;
 using System.Threading;
+using FunctionalLint.Adapters;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -282,14 +283,14 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         context.RegisterSyntaxTreeAction(ctx =>
         {
             var mayLower = PolicyList(ctx.Options.AnalyzerConfigOptionsProvider.GetOptions(ctx.Tree), MayLowerKey) ?? ImmutableArray<string>.Empty;
-            foreach (var found in SwitchOffs(ctx.Tree, mayLower, ctx.CancellationToken)) ctx.ReportDiagnostic(found);
+            Effects.ReportAll(SwitchOffs(ctx.Tree, mayLower, ctx.CancellationToken), ctx.ReportDiagnostic);
         });
 
         context.RegisterCompilationStartAction(start =>
         {
             // The guard skips adapters and legacy namespaces. It caches per compilation, so that work isn't
             // repeated for each of the many operations every rule looks at.
-            var guard = new Guard();
+            var guard = Guard.New();
             var GuardOp = guard.Op;
             var GuardSymbol = guard.Symbol;
 
@@ -298,7 +299,7 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
             // FP0018, when the policy sets the allowed references. Each library is judged once per compilation.
             if (PolicyList(start.Options.AnalyzerConfigOptionsProvider.GlobalOptions, AllowedReferencesKey) is { } allowedReferences)
             {
-                var outside = new ConcurrentDictionary<IAssemblySymbol, bool>(SymbolEqualityComparer.Default);
+                var outside = Memo.OfSymbols<IAssemblySymbol, bool>();
                 start.RegisterOperationAction(GuardOp(ctx => AnalyzeReference(ctx, allowedReferences, outside)), ReferenceKinds);
             }
             start.RegisterOperationAction(GuardOp(AnalyzeIndentedWriter), OperationKind.ObjectCreation);
@@ -334,7 +335,7 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
             var mutableTypes = Resolve(compilation, MutableTypes);
             var inSignatures = Resolve(compilation, MutableTypes.Concat(MutableInterfaces).Concat(SignatureAlternatives));
             var mutableInterfaces = Resolve(compilation, MutableInterfaces);
-            var impureByConfig = new ConcurrentDictionary<string, ImpureApis>(StringComparer.Ordinal);
+            var impureByConfig = Memo.Of<string, ImpureApis>(StringComparer.Ordinal);
 
             start.RegisterOperationAction(
                 GuardOp(ctx => AnalyzeCreation(ctx, mutableTypes)),
@@ -351,7 +352,7 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
             start.RegisterOperationAction(GuardOp(ctx =>
             {
                 var extra = OptionValue(ctx.Options, ctx.Operation.Syntax.SyntaxTree, ImpureApisKey);
-                var apis = impureByConfig.GetOrAdd(extra, e => ImpureApis.Create(compilation, e));
+                var apis = impureByConfig.Get(extra, e => ImpureApis.Create(compilation, e));
                 AnalyzeImpure(ctx, apis);
             }), ReferenceKinds);
         });
@@ -363,8 +364,8 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
     {
         // Report on the keyword only, so the whole loop body isn't underlined.
         // `await foreach` starts with `await`, so step past it to the loop keyword.
-        var keyword = ctx.Operation.Syntax.GetFirstToken();
-        if (keyword.IsKind(SyntaxKind.AwaitKeyword)) keyword = keyword.GetNextToken();
+        var first = ctx.Operation.Syntax.GetFirstToken();
+        var keyword = first.IsKind(SyntaxKind.AwaitKeyword) ? first.GetNextToken() : first;
         ctx.ReportDiagnostic(Diagnostic.Create(NoLoops, keyword.GetLocation(), keyword.Text));
     }
 
@@ -392,12 +393,7 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
 
     // A loop's own variables (`i++`, `total += x`) are reported once, as FP0001 on the loop: rewriting the loop
     // removes them, and "bind a new name" is the wrong advice inside a loop.
-    private static bool IsInsideLoop(IOperation op)
-    {
-        for (var current = op.Parent; current is not null; current = current.Parent)
-            if (current is ILoopOperation) return true;
-        return false;
-    }
+    private static bool IsInsideLoop(IOperation op) => Parents(op).Any(p => p is ILoopOperation);
 
     private static void ReportChange(OperationAnalysisContext ctx, SyntaxNode at, IOperation target)
     {
@@ -565,26 +561,23 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         ctx.ReportDiagnostic(Diagnostic.Create(NoObjects, type.Locations[0], type.Name));
     }
 
-    private static bool InheritsFrom(INamedTypeSymbol type, string fullName)
-    {
-        for (var current = type.BaseType; current is not null; current = current.BaseType)
-            if (current.ToDisplayString() == fullName) return true;
-        return false;
-    }
+    private static bool InheritsFrom(INamedTypeSymbol type, string fullName) =>
+        Sequences.Unfold(type.BaseType, t => t.BaseType).Any(t => t.ToDisplayString() == fullName);
 
     // FP0005 Creating mutable collections -------------------------------------
 
     // LINQ methods that build a mutable collection, and what to call instead.
-    private static readonly Dictionary<string, string> MutableBuilders = new(StringComparer.Ordinal)
+    private static string? MutableBuilder(string method) => method switch
     {
-        ["ToList"] = "ToImmutableArray() or ToImmutableList()",
-        ["ToDictionary"] = "ToImmutableDictionary()",
-        ["ToHashSet"] = "ToImmutableHashSet()",
-        ["CreateBuilder"] = "Select(...).ToImmutableArray()",
-        ["ToBuilder"] = "the immutable collection's own Add/SetItem/Remove, using each result",
+        "ToList" => "ToImmutableArray() or ToImmutableList()",
+        "ToDictionary" => "ToImmutableDictionary()",
+        "ToHashSet" => "ToImmutableHashSet()",
+        "CreateBuilder" => "Select(...).ToImmutableArray()",
+        "ToBuilder" => "the immutable collection's own Add/SetItem/Remove, using each result",
+        _ => null,
     };
 
-    private static void AnalyzeCreation(OperationAnalysisContext ctx, Dictionary<ISymbol, string> known)
+    private static void AnalyzeCreation(OperationAnalysisContext ctx, IReadOnlyDictionary<ISymbol, string> known)
     {
         var type = ctx.Operation.Type;
         if (type is null || MutableAlternative(type, known) is not { } alternative) return;
@@ -598,7 +591,8 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
             // `sb.Append(x)` returns the builder it was called on: that builder was reported where it was made.
             if (!method.IsStatic && !method.IsExtensionMethod
                 && SymbolEqualityComparer.Default.Equals(method.ContainingType.OriginalDefinition, type.OriginalDefinition)) return;
-            if (MutableBuilders.TryGetValue(method.Name, out var builder)) alternative = builder;
+            Report(ctx, NoMutableTypes, ctx.Operation.Syntax, Display(type), MutableBuilder(method.Name) ?? alternative);
+            return;
         }
 
         Report(ctx, NoMutableTypes, ctx.Operation.Syntax, Display(type), alternative);
@@ -612,7 +606,7 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
     // What to use instead of a mutable type, or null if it isn't one. Known types have tailored advice. Beyond those,
     // anything in the standard collection namespaces that can be added to is mutable, and so are the immutable
     // collections' builders (ImmutableArray<T>.Builder and friends).
-    private static string? MutableAlternative(ITypeSymbol type, Dictionary<ISymbol, string> known)
+    private static string? MutableAlternative(ITypeSymbol type, IReadOnlyDictionary<ISymbol, string> known)
     {
         if (known.TryGetValue(type.OriginalDefinition, out var alternative)) return alternative;
         if (type is not INamedTypeSymbol named || type.TypeKind == TypeKind.Interface) return null;
@@ -630,16 +624,14 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
 
     // `IList<int> xs = ...` declares a local that can be changed. Concrete types such as List<T> are
     // caught where they're created (above), so only the interfaces need checking here.
-    private static void AnalyzeLocalType(OperationAnalysisContext ctx, Dictionary<ISymbol, string> banned)
+    private static void AnalyzeLocalType(OperationAnalysisContext ctx, IReadOnlyDictionary<ISymbol, string> banned)
     {
         var op = (IVariableDeclarationOperation)ctx.Operation;
         if (op.Syntax is not VariableDeclarationSyntax { Type: { IsVar: false } typeSyntax }) return;
         if (op.Declarators.FirstOrDefault()?.Symbol.Type is not { } type) return;
 
-        var hit = TypesIn(type).FirstOrDefault(t => banned.ContainsKey(t.OriginalDefinition));
-        if (hit is null) return;
-
-        Report(ctx, NoMutableTypes, typeSyntax, Display(hit), banned[hit.OriginalDefinition]);
+        if (FirstBanned(TypesIn(type), banned) is not ({ } hit, { } alternative)) return;
+        Report(ctx, NoMutableTypes, typeSyntax, Display(hit), alternative);
     }
 
     // FP0006 Calling legacy code directly -------------------------------------
@@ -665,22 +657,21 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
 
     // FP0008 Mutable types in signatures --------------------------------------
 
-    private static void AnalyzeSignature(SymbolAnalysisContext ctx, Dictionary<ISymbol, string> banned)
+    private static void AnalyzeSignature(SymbolAnalysisContext ctx, IReadOnlyDictionary<ISymbol, string> banned)
     {
         var symbol = ctx.Symbol;
         // Overrides and interface implementations can't choose their signature.
         if (symbol.IsImplicitlyDeclared || symbol.IsOverride || IsExplicitImplementation(symbol)) return;
 
-        foreach (var (type, location) in SignatureTypes(symbol))
-        {
-            var hit = TypesIn(type).FirstOrDefault(t => banned.ContainsKey(t.OriginalDefinition));
-            if (hit is null) continue;
-
-            var problem = symbol is IFieldSymbol
-                ? $"'{Display(hit)}' in a field can be changed by any code that can see it."
-                : $"'{Display(hit)}' lets callers change the collection.";
-            ctx.ReportDiagnostic(Diagnostic.Create(MutableSignature, location, problem, banned[hit.OriginalDefinition]));
-        }
+        var found = SignatureTypes(symbol)
+            .Select(s => (s.Location, Hit: FirstBanned(TypesIn(s.Type), banned)))
+            .Where(s => s.Hit.Type is not null)
+            .Select(s => Diagnostic.Create(MutableSignature, s.Location,
+                symbol is IFieldSymbol
+                    ? $"'{Display(s.Hit.Type!)}' in a field can be changed by any code that can see it."
+                    : $"'{Display(s.Hit.Type!)}' lets callers change the collection.",
+                s.Hit.Alternative));
+        Effects.ReportAll(found, ctx.ReportDiagnostic);
     }
 
     // FP0009 Adapters leaking legacy types ------------------------------------
@@ -699,13 +690,11 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         var legacy = LegacyNamespaces(ctx.Options, tree);
         if (legacy.IsEmpty) return;
 
-        foreach (var (type, location) in SignatureTypes(symbol))
-        {
-            var hit = TypesIn(type).FirstOrDefault(t => IsInNamespaces(t, legacy));
-            if (hit is null) continue;
-
-            ctx.ReportDiagnostic(Diagnostic.Create(AdapterLeak, location, symbol.Name, hit.Name));
-        }
+        var found = SignatureTypes(symbol)
+            .Select(s => (s.Location, Hit: TypesIn(s.Type).FirstOrDefault(t => IsInNamespaces(t, legacy))))
+            .Where(s => s.Hit is not null)
+            .Select(s => Diagnostic.Create(AdapterLeak, s.Location, symbol.Name, s.Hit!.Name));
+        Effects.ReportAll(found, ctx.ReportDiagnostic);
     }
 
     // FP0010 async void -------------------------------------------------------
@@ -839,16 +828,16 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
             })
             .Where(m => m.Type is not null && ComparesByReference(m.Type));
 
-        foreach (var (member, memberType) in members)
+        var found = members.Select(m =>
         {
-            var isMap = memberType!.AllInterfaces.Concat(memberType is INamedTypeSymbol n ? [n] : [])
+            var isMap = m.Type!.AllInterfaces.Concat(m.Type is INamedTypeSymbol n ? [n] : [])
                 .Any(i => i.OriginalDefinition.ToDisplayString() is "System.Collections.Generic.IReadOnlyDictionary<TKey, TValue>"
                     or "System.Collections.Generic.IDictionary<TKey, TValue>");
             // Suggest a type the project can actually use; without one, the rule's docs show one to copy.
             var suggestion = (isMap ? valueTypes.Value.Map : valueTypes.Value.List) ?? "a [ValueEquality] collection";
-            ctx.ReportDiagnostic(Diagnostic.Create(ReferenceEqualityInRecord, member.Locations[0], Display(memberType), type.Name,
-                suggestion));
-        }
+            return Diagnostic.Create(ReferenceEqualityInRecord, m.Symbol.Locations[0], Display(m.Type), type.Name, suggestion);
+        });
+        Effects.ReportAll(found, ctx.ReportDiagnostic);
     }
 
     // The [ValueEquality] list and map types this compilation can see, in its own source or a non-framework reference.
@@ -867,7 +856,7 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
             .SelectMany(a => TypesIn(a.GlobalNamespace))
             .Where(t => t.DeclaredAccessibility == Accessibility.Public || SymbolEqualityComparer.Default.Equals(t.ContainingAssembly, compilation.Assembly))
             .Where(t => t.GetAttributes().Any(a => a.AttributeClass?.Name == "ValueEqualityAttribute"))
-            .ToList();
+            .ToImmutableArray();
 
         string? Pick(string name, int arity) =>
             (marked.FirstOrDefault(t => t.Name == name && t.Arity == arity) ?? marked.FirstOrDefault(t => t.Arity == arity))
@@ -962,21 +951,18 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
             _ => false,
         };
 
-        for (IOperation child = op, parent = op.Parent!; parent is not null; child = parent, parent = parent.Parent!)
+        // Each step up from the call: is this parent a guard, with the child on its guarded side?
+        var chain = Sequences.Unfold(op, o => o.Parent);
+        return chain.Zip(chain.Skip(1), (child, parent) => parent switch
         {
-            var guarded = parent switch
-            {
-                IConditionalOperation c when c.WhenTrue == child => Checks(c.Condition, whenTrue: true),
-                IConditionalOperation c when c.WhenFalse == child => Checks(c.Condition, whenTrue: false),
-                IBinaryOperation { OperatorKind: BinaryOperatorKind.ConditionalAnd } b when b.RightOperand == child =>
-                    Checks(b.LeftOperand, whenTrue: true),
-                IBinaryOperation { OperatorKind: BinaryOperatorKind.ConditionalOr } b when b.RightOperand == child =>
-                    Checks(b.LeftOperand, whenTrue: false),
-                _ => false,
-            };
-            if (guarded) return true;
-        }
-        return false;
+            IConditionalOperation c when c.WhenTrue == child => Checks(c.Condition, whenTrue: true),
+            IConditionalOperation c when c.WhenFalse == child => Checks(c.Condition, whenTrue: false),
+            IBinaryOperation { OperatorKind: BinaryOperatorKind.ConditionalAnd } b when b.RightOperand == child =>
+                Checks(b.LeftOperand, whenTrue: true),
+            IBinaryOperation { OperatorKind: BinaryOperatorKind.ConditionalOr } b when b.RightOperand == child =>
+                Checks(b.LeftOperand, whenTrue: false),
+            _ => false,
+        }).Any(guarded => guarded);
     }
 
     // `xs.GroupBy(k).ToDictionary(g => g.Key, ...)` can't have duplicate keys, and `xs.DefaultIfEmpty(0).Max()`
@@ -988,52 +974,36 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         Origin(op.Instance ?? op.Arguments.FirstOrDefault()?.Value) is IInvocationOperation call
         && call.TargetMethod.Name is "GroupBy" or "Distinct" or "DistinctBy" or "ToLookup";
 
-    private static readonly HashSet<string> KeepsItemsUnique = new(StringComparer.Ordinal)
-    {
+    private static readonly ImmutableHashSet<string> KeepsItemsUnique = ImmutableHashSet.Create(StringComparer.Ordinal,
         "Where", "OrderBy", "OrderByDescending", "ThenBy", "ThenByDescending", "Order", "OrderDescending", "Reverse",
         "Skip", "Take", "SkipWhile", "TakeWhile", "SkipLast", "TakeLast", "AsEnumerable", "AsReadOnly",
-        "ToArray", "ToList", "ToImmutableArray", "ToImmutableList", "ToValueList", "ToHashSet", "ToImmutableHashSet",
-    };
+        "ToArray", "ToList", "ToImmutableArray", "ToImmutableList", "ToValueList", "ToHashSet", "ToImmutableHashSet");
 
     // Where a sequence came from: unwraps conversions, unique-preserving steps and locals (a core can't reassign
     // one, so its initializer is its value). Stops after a few steps, so it stays cheap.
-    private static IOperation? Origin(IOperation? source)
+    private static IOperation? Origin(IOperation? source, int depth = 0) => depth >= 12 ? source : source switch
     {
-        for (var step = 0; step < 12 && source is not null; step++)
-        {
-            switch (source)
-            {
-                case IConversionOperation conversion:
-                    source = conversion.Operand;
-                    break;
-                case IInvocationOperation call when KeepsItemsUnique.Contains(call.TargetMethod.Name):
-                    source = call.Instance ?? call.Arguments.FirstOrDefault()?.Value;
-                    break;
-                case ILocalReferenceOperation local
-                    when local.Local.DeclaringSyntaxReferences.Length == 1
-                         && local.Local.DeclaringSyntaxReferences[0].GetSyntax() is VariableDeclaratorSyntax { Initializer.Value: { } value }
-                         && local.SemanticModel is { } model
-                         && value.SyntaxTree == model.SyntaxTree:
-                    source = model.GetOperation(value);
-                    break;
-                default:
-                    return source;
-            }
-        }
-        return source;
-    }
+        IConversionOperation conversion => Origin(conversion.Operand, depth + 1),
+        IInvocationOperation call when KeepsItemsUnique.Contains(call.TargetMethod.Name) =>
+            Origin(call.Instance ?? call.Arguments.FirstOrDefault()?.Value, depth + 1),
+        ILocalReferenceOperation local
+            when local.Local.DeclaringSyntaxReferences.Length == 1
+                 && local.Local.DeclaringSyntaxReferences[0].GetSyntax() is VariableDeclaratorSyntax { Initializer.Value: { } value }
+                 && local.SemanticModel is { } model
+                 && value.SyntaxTree == model.SyntaxTree =>
+            Origin(model.GetOperation(value), depth + 1),
+        _ => source,
+    };
 
     // `Enumerable.Range(n, int.MaxValue - n).First(...)` (or Repeat) is a search that runs until it finds something:
     // "the first free slug suffix". It can't run out in practice, so it isn't reported.
     private static bool IsUnboundedSearch(IInvocationOperation op)
     {
-        var source = op.Arguments.FirstOrDefault()?.Value;
-        while (source is IConversionOperation conversion) source = conversion.Operand;
-        while (source is IInvocationOperation { TargetMethod.Name: "Select" or "Where" } step)
-        {
-            source = step.Arguments.FirstOrDefault()?.Value;
-            while (source is IConversionOperation inner) source = inner.Operand;
-        }
+        static IOperation? BeforeSelectAndWhere(IOperation? source) =>
+            source is IInvocationOperation { TargetMethod.Name: "Select" or "Where" } step
+                ? BeforeSelectAndWhere(Unwrapped(step.Arguments.FirstOrDefault()?.Value))
+                : source;
+        var source = BeforeSelectAndWhere(Unwrapped(op.Arguments.FirstOrDefault()?.Value));
 
         return source is IInvocationOperation generator
             && (generator.TargetMethod is { Name: "From", ContainingType.Name: "Sequences" }
@@ -1045,8 +1015,7 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
     // Sequences that can't be empty: a group from GroupBy, or anything after Append, Prepend or DefaultIfEmpty.
     private static bool IsNonEmpty(IInvocationOperation op)
     {
-        var source = op.Arguments.FirstOrDefault()?.Value;
-        while (source is IConversionOperation conversion) source = conversion.Operand;
+        var source = Unwrapped(op.Arguments.FirstOrDefault()?.Value);
         return SourceIs(op, "DefaultIfEmpty", "Append", "Prepend")
             || source?.Type is { } type && type.AllInterfaces.Concat(type is INamedTypeSymbol n ? [n] : [])
                 .Any(i => i.OriginalDefinition.ToDisplayString() == "System.Linq.IGrouping<TKey, TElement>");
@@ -1056,8 +1025,7 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
     // or comparer could make two of them collide.
     private static bool CopiesADictionary(IInvocationOperation op)
     {
-        var source = op.Arguments.FirstOrDefault()?.Value;
-        while (source is IConversionOperation conversion) source = conversion.Operand;
+        var source = Unwrapped(op.Arguments.FirstOrDefault()?.Value);
         var isDictionary = source?.Type is { } type && type.AllInterfaces.Concat(type is INamedTypeSymbol n ? [n] : [])
             .Any(i => i.OriginalDefinition.ToDisplayString() is "System.Collections.Generic.IReadOnlyDictionary<TKey, TValue>"
                 or "System.Collections.Generic.IDictionary<TKey, TValue>");
@@ -1067,8 +1035,7 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
 
     private static bool SourceIs(IInvocationOperation op, params string[] methods)
     {
-        var source = op.Arguments.FirstOrDefault()?.Value;
-        while (source is IConversionOperation conversion) source = conversion.Operand;
+        var source = Unwrapped(op.Arguments.FirstOrDefault()?.Value);
         return source is IInvocationOperation call && methods.Contains(call.TargetMethod.Name);
     }
 
@@ -1179,14 +1146,14 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
 
         var assignments = creation.Initializer.Initializers.OfType<ISimpleAssignmentOperation>()
             .Select(a => (Name: (a.Target as IPropertyReferenceOperation)?.Property.Name, Assignment: a))
-            .ToList();
+            .ToImmutableArray();
         if (assignments.Any(a => a.Name == newLine)) return;
 
         var indented = assignments.FirstOrDefault(a => a.Name == indent).Assignment;
         if (indented is null || indented.Value.ConstantValue is { HasValue: true, Value: false }) return;
 
         ctx.ReportDiagnostic(Diagnostic.Create(ImpureApi, indented.Syntax.GetLocation(),
-            ImmutableDictionary<string, string?>.Empty.Add(AddNewLineKey, newLine),
+            ImmutableDictionary<string, string?>.Empty.SetItem(AddNewLineKey, newLine),
             $"{type.Name}.{indent}", "writes Environment.NewLine, " + WindowsNewLine,
             $"Use {newLine} = \"\\n\" in the same initializer."));
     }
@@ -1199,37 +1166,32 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
             || method.ContainingType.SpecialType != SpecialType.System_String) return;
 
         ctx.ReportDiagnostic(Diagnostic.Create(ImpureApi, call.Syntax.GetLocation(),
-            ImmutableDictionary<string, string?>.Empty.Add(AddArgumentKey, "true"),
+            ImmutableDictionary<string, string?>.Empty.SetItem(AddArgumentKey, "true"),
             "string.ReplaceLineEndings()", "uses Environment.NewLine, " + WindowsNewLine,
             "Use ReplaceLineEndings(\"\\n\") instead."));
     }
 
-    private sealed class ImpureApis
+    // The side-effecting APIs: whole types, and single members as "Type.Member".
+    private sealed record ImpureApis(ImmutableHashSet<ISymbol> Types, ImmutableHashSet<string> Members)
     {
-        private readonly HashSet<ISymbol> _types = new(SymbolEqualityComparer.Default);
-        private readonly HashSet<string> _members = new(StringComparer.Ordinal);
-
         public static ImpureApis Create(Compilation compilation, string extra)
         {
-            var apis = new ImpureApis();
-            foreach (var entry in DefaultImpureApis.Concat(SplitList(extra)))
-            {
-                if (compilation.GetTypeByMetadataName(entry) is { } type)
-                {
-                    apis._types.Add(type);
-                    continue;
-                }
-
-                var dot = entry.LastIndexOf('.');
-                if (dot > 0 && compilation.GetTypeByMetadataName(entry.Substring(0, dot)) is { } owner)
-                    apis._members.Add(Key(owner, entry.Substring(dot + 1)));
-            }
-            return apis;
+            var entries = DefaultImpureApis.Concat(SplitList(extra)).ToImmutableArray();
+            var types = entries.Select(compilation.GetTypeByMetadataName).OfType<INamedTypeSymbol>();
+            var members = entries
+                .Where(entry => compilation.GetTypeByMetadataName(entry) is null)
+                .Select(entry => (Entry: entry, Dot: entry.LastIndexOf('.')))
+                .Where(e => e.Dot > 0)
+                .Select(e => compilation.GetTypeByMetadataName(e.Entry.Substring(0, e.Dot)) is { } owner
+                    ? Key(owner, e.Entry.Substring(e.Dot + 1)) : null)
+                .OfType<string>();
+            return new ImpureApis(
+                ImmutableHashSet.CreateRange<ISymbol>(SymbolEqualityComparer.Default, types),
+                ImmutableHashSet.CreateRange(StringComparer.Ordinal, members));
         }
 
         public bool Contains(ISymbol member, INamedTypeSymbol type) =>
-            _types.Contains(type.OriginalDefinition)
-            || _members.Contains(Key(type.OriginalDefinition, member.Name));
+            Types.Contains(type.OriginalDefinition) || Members.Contains(Key(type.OriginalDefinition, member.Name));
 
         private static string Key(ITypeSymbol type, string member) => type.ToDisplayString() + "." + member;
     }
@@ -1247,30 +1209,37 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         bool Allowed(string id) => mayLower.Contains(id, StringComparer.OrdinalIgnoreCase);
         var root = tree.GetRoot(ct);
 
-        foreach (var trivia in root.DescendantTrivia(descendIntoTrivia: true))
+        var directives = root.DescendantTrivia(descendIntoTrivia: true).Select(trivia => trivia.GetStructure() switch
         {
-            if (trivia.GetStructure() is PragmaWarningDirectiveTriviaSyntax pragma
-                && pragma.DisableOrRestoreKeyword.IsKind(SyntaxKind.DisableKeyword)
-                && (pragma.ErrorCodes.Count == 0 || pragma.ErrorCodes.Any(code => !Allowed(code.ToString().Trim()))))
-                yield return Diagnostic.Create(RuleSwitchedOff, pragma.GetLocation(), Short(pragma.ToString()), "turns checks off", RemoveIt);
-            else if (trivia.GetStructure() is NullableDirectiveTriviaSyntax nullable
-                && nullable.SettingToken.IsKind(SyntaxKind.DisableKeyword) && !Allowed("nullable"))
-                yield return Diagnostic.Create(RuleSwitchedOff, nullable.GetLocation(), Short(nullable.ToString()), "turns nullable checks off", RemoveIt);
-        }
+            PragmaWarningDirectiveTriviaSyntax pragma
+                when pragma.DisableOrRestoreKeyword.IsKind(SyntaxKind.DisableKeyword)
+                     && (pragma.ErrorCodes.Count == 0 || pragma.ErrorCodes.Any(code => !Allowed(code.ToString().Trim()))) =>
+                Diagnostic.Create(RuleSwitchedOff, pragma.GetLocation(), Short(pragma.ToString()), "turns checks off", RemoveIt),
+            NullableDirectiveTriviaSyntax nullable
+                when nullable.SettingToken.IsKind(SyntaxKind.DisableKeyword) && !Allowed("nullable") =>
+                Diagnostic.Create(RuleSwitchedOff, nullable.GetLocation(), Short(nullable.ToString()), "turns nullable checks off", RemoveIt),
+            _ => null,
+        }).OfType<Diagnostic>();
 
-        foreach (var attribute in root.DescendantNodes().OfType<AttributeSyntax>())
-        {
-            var name = attribute.Name.ToString();
-            var simple = name.Substring(name.LastIndexOf('.') + 1);
-            if (simple is not ("SuppressMessage" or "SuppressMessageAttribute" or "UnconditionalSuppressMessage" or "UnconditionalSuppressMessageAttribute"))
-                continue;
-            // [SuppressMessage("Category", "FP0001:Title")]: the rule ID is the second argument, up to a colon.
-            var id = attribute.ArgumentList?.Arguments.Skip(1).FirstOrDefault()?.Expression is LiteralExpressionSyntax literal
-                ? literal.Token.ValueText.Split(':')[0].Trim() : "";
-            if (!Allowed(id))
-                yield return Diagnostic.Create(RuleSwitchedOff, attribute.GetLocation(), Short($"[{attribute}]"), "turns checks off", RemoveIt);
-        }
+        var suppressions = root.DescendantNodes().OfType<AttributeSyntax>()
+            .Where(attribute => IsSuppression(attribute) && !Allowed(SuppressedRule(attribute)))
+            .Select(attribute => Diagnostic.Create(RuleSwitchedOff, attribute.GetLocation(), Short($"[{attribute}]"), "turns checks off", RemoveIt));
+
+        return directives.Concat(suppressions);
     }
+
+    private static bool IsSuppression(AttributeSyntax attribute)
+    {
+        var name = attribute.Name.ToString();
+        return name.Substring(name.LastIndexOf('.') + 1)
+            is "SuppressMessage" or "SuppressMessageAttribute" or "UnconditionalSuppressMessage" or "UnconditionalSuppressMessageAttribute";
+    }
+
+    // [SuppressMessage("Category", "FP0001:Title")]: the rule ID is the second argument, up to a colon.
+    private static string SuppressedRule(AttributeSyntax attribute) =>
+        attribute.ArgumentList?.Arguments.Skip(1).FirstOrDefault()?.Expression is LiteralExpressionSyntax literal
+            ? literal.Token.ValueText.Split(':')[0].Trim()
+            : "";
 
     private static string Short(string code)
     {
@@ -1305,14 +1274,14 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
     }
 
     private static void AnalyzeReference(OperationAnalysisContext ctx, ImmutableArray<string> allowed,
-        ConcurrentDictionary<IAssemblySymbol, bool> outside)
+        Memo<IAssemblySymbol, bool> outside)
     {
         var (member, type) = Referenced(ctx.Operation);
         var assembly = member?.ContainingAssembly ?? type?.ContainingAssembly;
         if (member is null || type is null || assembly is null
             || SymbolEqualityComparer.Default.Equals(assembly, ctx.Compilation.Assembly)) return;
 
-        var isOutside = outside.GetOrAdd(assembly, a =>
+        var isOutside = outside.Get(assembly, a =>
             !(ctx.Compilation.GetMetadataReference(a) is { } reference && IsDotNetBaseLibrary(reference))
             && !allowed.Any(entry => entry.EndsWith("*", StringComparison.Ordinal)
                 ? a.Identity.Name.StartsWith(entry.Substring(0, entry.Length - 1), StringComparison.OrdinalIgnoreCase)
@@ -1342,11 +1311,12 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
 
     // Exemptions --------------------------------------------------------------
 
-    // Decides, once per file and once per symbol in each compilation, whether the rules apply.
-    private sealed class Guard
+    // Decides, once per file and once per symbol in each compilation, whether the rules apply. The answers are
+    // cached (Memo, an adapter): callbacks for one compilation run in parallel and ask the same questions.
+    private sealed record Guard(Memo<SyntaxTree, ImmutableArray<string>> Legacy, Memo<ISymbol, bool> ExemptSymbols)
     {
-        private readonly ConcurrentDictionary<SyntaxTree, ImmutableArray<string>> _legacy = new();
-        private readonly ConcurrentDictionary<ISymbol, bool> _exempt = new(SymbolEqualityComparer.Default);
+        public static Guard New() =>
+            new(Memo.Of<SyntaxTree, ImmutableArray<string>>(EqualityComparer<SyntaxTree>.Default), Memo.OfSymbols<ISymbol, bool>());
 
         public Action<OperationAnalysisContext> Op(Action<OperationAnalysisContext> rule) => ctx =>
         {
@@ -1360,45 +1330,29 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
             if (tree is not null && !Exempt(ctx.Symbol, ctx.Options, tree)) rule(ctx);
         };
 
-        private bool Exempt(ISymbol symbol, AnalyzerOptions options, SyntaxTree tree)
-        {
-            var legacy = _legacy.GetOrAdd(tree, t => LegacyNamespaces(options, t));
-            return _exempt.GetOrAdd(symbol, s => IsExempt(s, legacy));
-        }
+        private bool Exempt(ISymbol symbol, AnalyzerOptions options, SyntaxTree tree) =>
+            ExemptSymbols.Get(symbol, s => IsExempt(s, Legacy.Get(tree, t => LegacyNamespaces(options, t))));
 
         // An operation inside a local function or lambda marked [ImperativeAdapter]. (Its ContainingSymbol is
-        // the enclosing method, so the symbol check above can't see the attribute.)
-        private static bool InAdapterFunction(IOperation operation)
-        {
-            // Start at the operation itself: a marked local function's own declaration is exempt too (FP0010).
-            for (var current = operation; current is not null; current = current.Parent)
+        // the enclosing method, so the symbol check above can't see the attribute.) It starts at the operation
+        // itself: a marked local function's own declaration is exempt too (FP0010).
+        private static bool InAdapterFunction(IOperation operation) =>
+            Sequences.Unfold(operation, o => o.Parent).Any(current => current switch
             {
-                var function = current switch
-                {
-                    ILocalFunctionOperation local => local.Symbol,
-                    IAnonymousFunctionOperation lambda => lambda.Symbol,
-                    _ => null,
-                };
-                if (function is not null && HasAdapterAttribute(function)) return true;
-            }
-            return false;
-        }
+                ILocalFunctionOperation local => HasAdapterAttribute(local.Symbol),
+                IAnonymousFunctionOperation lambda => HasAdapterAttribute(lambda.Symbol),
+                _ => false,
+            });
     }
 
     private static bool IsExempt(ISymbol symbol, ImmutableArray<string> legacy) =>
         IsInAdapter(symbol) || IsInNamespaces(symbol, legacy);
 
     // True if the symbol, its property/event, or any enclosing type has [ImperativeAdapter].
-    private static bool IsInAdapter(ISymbol? symbol)
-    {
-        while (symbol is not null and not INamespaceSymbol)
-        {
-            if (HasAdapterAttribute(symbol)) return true;
-            if (symbol is IMethodSymbol { AssociatedSymbol: { } owner } && HasAdapterAttribute(owner)) return true;
-            symbol = symbol.ContainingSymbol;
-        }
-        return false;
-    }
+    private static bool IsInAdapter(ISymbol? symbol) =>
+        Sequences.Unfold(symbol, s => s.ContainingSymbol)
+            .TakeWhile(s => s is not INamespaceSymbol)
+            .Any(s => HasAdapterAttribute(s) || s is IMethodSymbol { AssociatedSymbol: { } owner } && HasAdapterAttribute(owner));
 
     private static bool HasAdapterAttribute(ISymbol symbol) =>
         symbol.GetAttributes().Any(a => a.AttributeClass?.Name == AdapterAttributeName);
@@ -1421,13 +1375,24 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
     private static ImmutableArray<string> SplitList(string value) =>
         value.Split(',').Select(s => s.Trim()).Where(s => s.Length > 0).ToImmutableArray();
 
-    private static Dictionary<ISymbol, string> Resolve(Compilation compilation, IEnumerable<(string MetadataName, string Alternative)> entries)
-    {
-        var map = new Dictionary<ISymbol, string>(SymbolEqualityComparer.Default);
-        foreach (var (name, alternative) in entries)
-            if (compilation.GetTypeByMetadataName(name) is { } type) map[type] = alternative;
-        return map;
-    }
+    // The types a compilation has, with their alternatives. Where an entry repeats, the last one wins.
+    private static IReadOnlyDictionary<ISymbol, string> Resolve(Compilation compilation, IEnumerable<(string MetadataName, string Alternative)> entries) =>
+        entries
+            .Select(e => (Type: (ISymbol?)compilation.GetTypeByMetadataName(e.MetadataName), e.Alternative))
+            .Where(e => e.Type is not null)
+            .GroupBy(e => e.Type!, SymbolEqualityComparer.Default)
+            .ToImmutableDictionary(g => g.Key, g => g.Last().Alternative, SymbolEqualityComparer.Default);
+
+    // The first type `banned` lists, with its alternative.
+    private static (ITypeSymbol? Type, string? Alternative) FirstBanned(IEnumerable<ITypeSymbol> types, IReadOnlyDictionary<ISymbol, string> banned) =>
+        types.Select(t => (Type: (ITypeSymbol?)t, Alternative: banned.TryGetValue(t.OriginalDefinition, out var alternative) ? alternative : null))
+            .FirstOrDefault(h => h.Alternative is not null);
+
+    // An operation's parents, nearest first.
+    private static IEnumerable<IOperation> Parents(IOperation op) => Sequences.Unfold(op.Parent, o => o.Parent);
+
+    // The operation under any conversions.
+    private static IOperation? Unwrapped(IOperation? op) => op is IConversionOperation conversion ? Unwrapped(conversion.Operand) : op;
 
     // The member an operation uses, and the type that owns it.
     private static (ISymbol? Member, INamedTypeSymbol? Type) Referenced(IOperation operation)
@@ -1443,29 +1408,19 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
     }
 
     // Every type a member exposes, with where to report it.
-    private static IEnumerable<(ITypeSymbol Type, Location Location)> SignatureTypes(ISymbol symbol)
+    private static IEnumerable<(ITypeSymbol Type, Location Location)> SignatureTypes(ISymbol symbol) => symbol switch
     {
-        switch (symbol)
-        {
-            case IMethodSymbol method when method.MethodKind is MethodKind.Ordinary or MethodKind.Constructor
-                                           or MethodKind.UserDefinedOperator or MethodKind.Conversion:
-                if (!method.ReturnsVoid) yield return (method.ReturnType, method.Locations[0]);
-                foreach (var parameter in method.Parameters)
-                    if (!IsRecordPropertyParameter(method, parameter))
-                        yield return (parameter.Type, parameter.Locations.FirstOrDefault() ?? method.Locations[0]);
-                break;
-
-            case IPropertySymbol property:
-                yield return (property.Type, property.Locations[0]);
-                foreach (var parameter in property.Parameters)
-                    yield return (parameter.Type, parameter.Locations.FirstOrDefault() ?? property.Locations[0]);
-                break;
-
-            case IFieldSymbol field:
-                yield return (field.Type, field.Locations[0]);
-                break;
-        }
-    }
+        IMethodSymbol method when method.MethodKind is MethodKind.Ordinary or MethodKind.Constructor
+                                  or MethodKind.UserDefinedOperator or MethodKind.Conversion =>
+            (method.ReturnsVoid ? [] : new[] { (method.ReturnType, method.Locations[0]) })
+                .Concat(method.Parameters.Where(p => !IsRecordPropertyParameter(method, p))
+                    .Select(p => (p.Type, p.Locations.FirstOrDefault() ?? method.Locations[0]))),
+        IPropertySymbol property =>
+            new[] { (property.Type, property.Locations[0]) }
+                .Concat(property.Parameters.Select(p => (p.Type, p.Locations.FirstOrDefault() ?? property.Locations[0]))),
+        IFieldSymbol field => [(field.Type, field.Locations[0])],
+        _ => [],
+    };
 
     // A positional record parameter is also a property. Report it once, on the property.
     private static bool IsRecordPropertyParameter(IMethodSymbol method, IParameterSymbol parameter) =>
@@ -1475,19 +1430,13 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
             .Any(p => p.Locations.SequenceEqual(parameter.Locations));
 
     // A type plus its type arguments and element types, so Task<List<T>> is caught.
-    private static IEnumerable<ITypeSymbol> TypesIn(ITypeSymbol type)
-    {
-        yield return type;
-        var children = type switch
+    private static IEnumerable<ITypeSymbol> TypesIn(ITypeSymbol type) =>
+        new[] { type }.Concat((type switch
         {
             INamedTypeSymbol named => named.TypeArguments,
             IArrayTypeSymbol array => ImmutableArray.Create(array.ElementType),
             _ => ImmutableArray<ITypeSymbol>.Empty,
-        };
-        foreach (var child in children)
-            foreach (var nested in TypesIn(child))
-                yield return nested;
-    }
+        }).SelectMany(TypesIn));
 
     private static bool IsExplicitImplementation(ISymbol symbol) => symbol switch
     {

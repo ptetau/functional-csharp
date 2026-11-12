@@ -70,26 +70,20 @@ public sealed class NewLineFix : CodeFixProvider
                 SyntaxFactory.Token(SyntaxKind.EqualsToken).WithLeadingTrivia(SyntaxFactory.Space).WithTrailingTrivia(SyntaxFactory.Space),
                 NewLineLiteral());
 
-        var separators = items.GetSeparators().ToList();
-        var nodes = items.ToList();
-        if (at < separators.Count)
-        {
-            // `indent,` is followed by a comma already: give the new item the same one.
-            separators.Insert(at, separators[at]);
-            nodes.Insert(at + 1, newLine);
-        }
-        else
-        {
-            // `indent` is last with no comma: move its trailing trivia (a space or line break) after the new item.
-            var lineBreak = indent.GetTrailingTrivia().Where(t => t.IsKind(SyntaxKind.EndOfLineTrivia)).Take(1);
-            var comma = SyntaxFactory.Token(SyntaxKind.CommaToken).WithTrailingTrivia(
-                separators.Count > 0 ? separators[separators.Count - 1].TrailingTrivia
-                : lineBreak.Any() ? SyntaxFactory.TriviaList(lineBreak) : SyntaxFactory.TriviaList(SyntaxFactory.Space));
-            separators.Add(comma);
-            nodes[at] = indent.WithoutTrailingTrivia();
-            nodes.Insert(at + 1, newLine.WithTrailingTrivia(indent.GetTrailingTrivia()));
-        }
+        var separators = items.GetSeparators().ToImmutableArray();
+        var nodes = items.ToImmutableArray();
 
-        return initializer.WithExpressions(SyntaxFactory.SeparatedList(nodes, separators));
+        // `indent,` is followed by a comma already: give the new item the same one.
+        if (at < separators.Length)
+            return initializer.WithExpressions(SyntaxFactory.SeparatedList(nodes.Insert(at + 1, newLine), separators.Insert(at, separators[at])));
+
+        // `indent` is last with no comma: move its trailing trivia (a space or line break) after the new item.
+        var lineBreak = indent.GetTrailingTrivia().Where(t => t.IsKind(SyntaxKind.EndOfLineTrivia)).Take(1);
+        var comma = SyntaxFactory.Token(SyntaxKind.CommaToken).WithTrailingTrivia(
+            separators.Length > 0 ? separators[separators.Length - 1].TrailingTrivia
+            : lineBreak.Any() ? SyntaxFactory.TriviaList(lineBreak) : SyntaxFactory.TriviaList(SyntaxFactory.Space));
+        return initializer.WithExpressions(SyntaxFactory.SeparatedList(
+            nodes.SetItem(at, indent.WithoutTrailingTrivia()).Insert(at + 1, newLine.WithTrailingTrivia(indent.GetTrailingTrivia())),
+            separators.Add(comma)));
     }
 }

@@ -257,6 +257,18 @@ The tests are laid out so it's clear where a new case goes:
 
 In test sources, `{|FP0001:text|}` means "expect FP0001 on exactly this text". Any diagnostic that isn't marked fails the test.
 
+## Its own rules
+
+FunctionalLint is checked by itself. The analyzer and code fixes are gate-only cores in [`functionallint.policy`](../functionallint.policy) (they can't load themselves at build time), and CI gates them with `heal.sh FunctionalLint/FunctionalLint.slnx --check`.
+- **The imperative part is in one file.** [`Adapters.cs`](src/FunctionalLint/Adapters.cs) holds the caches that parallel callbacks share (`Memo`), reporting each diagnostic (`Effects.ReportAll`), and `Sequences.Unfold` (walking up an operation's parents). Everything else follows the rules.
+- **`heal.sh` fixed its own analyzer first** (five signatures). The rest was rewritten by hand: loops became LINQ or recursion, lookup tables became `switch` expressions, and mutable sets became immutable ones.
+- **Dogfooding found four gaps in the lint**, all fixed:
+  - FP0004 flagged classes a library requires (an analyzer, a JSON converter).
+  - FP0018 flagged references nothing used.
+  - FP0018 treated .NET Standard's base library as outside references.
+  - A policy saved outside the repository (as CI does) couldn't find its projects.
+- **The heal tool isn't a core.** It loads MSBuild projects, writes files and serves a socket: it's the shell, the way the sample apps' CLIs and web app are.
+
 ## What it can't catch
 
 - **Mutating methods on library types.** `Array.Sort`, `Array.Fill` and similar are caught (FP0002), but a method that changes a mutable object from a library isn't. FP0005 and FP0008 keep most mutable collections out in the first place.

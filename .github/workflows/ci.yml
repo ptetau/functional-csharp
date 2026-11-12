@@ -62,7 +62,10 @@ jobs:
         env:
           FUNCTIONALLINT_NO_SERVER: "1"
           FUNCTIONALLINT_POLICY: ${{ steps.policy.outputs.path }}
-        run: FunctionalLint/heal.sh samples/Samples.slnx --check
+        run: |
+          FunctionalLint/heal.sh samples/Samples.slnx --check
+          # FunctionalLint's own analyzer and code fixes, under the same rules (gate-only cores in the policy).
+          FunctionalLint/heal.sh FunctionalLint/FunctionalLint.slnx --check
       - name: Agent hook and check server, end to end
         shell: bash
         env:
