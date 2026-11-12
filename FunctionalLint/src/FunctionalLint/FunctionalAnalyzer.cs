@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
 using System.Reflection;
+using System.Threading;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -136,6 +137,27 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         "dictionary indexer on a missing key. Use the form that returns a value you can check, and turn failure into a " +
         "Result or Option. Adapters may call them.");
 
+    public static readonly DiagnosticDescriptor RuleSwitchedOff = Rule("FP0016",
+        "Checks must stay on",
+        "'{0}' {1}. {2}",
+        "A functional core can't turn checks off: no '#pragma warning disable', [SuppressMessage] or '#nullable disable'. " +
+        "The gate (heal.sh --check, the agent hook, CI) also reports what a file can't show: a rule lowered by NoWarn or " +
+        "config, nullable checking turned off, a file marked as generated code, or a policy core that no longer loads " +
+        "FunctionalLint. functional_lint.may_lower lists the exceptions the project owner allows.");
+
+    public static readonly DiagnosticDescriptor AdapterPlacement = Rule("FP0017",
+        "Adapters only where the policy allows them",
+        "'{0}' is an [ImperativeAdapter]{1}. Move it {2}, or pass the value in.",
+        "[ImperativeAdapter] switches every rule off for what it marks, so where adapters may live is the project " +
+        "owner's decision: functional_lint.adapter_namespaces (set by functionallint.policy). Off when that key isn't set.");
+
+    public static readonly DiagnosticDescriptor ReferenceOutsidePolicy = Rule("FP0018",
+        "Functional cores reference only allowed libraries",
+        "'{0}' isn't on this core's list of allowed references. Move the code that uses it to a shell project.",
+        "A core that can't reference a database client, logger or HTTP library can't call one. A core may reference " +
+        "the .NET base library and what functional_lint.allowed_references lists (set by functionallint.policy). " +
+        "Off when that key isn't set.");
+
     public const string HelpLinkBase = "https://github.com/ptetau/functional-csharp/blob/main/FunctionalLint/docs/rules/";
 
     private static DiagnosticDescriptor Rule(string id, string title, string message, string description) =>
@@ -145,7 +167,7 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics { get; } = ImmutableArray.Create(
         NoLoops, NoMutation, NoMutableState, NoObjects, NoMutableTypes, NoDirectImperative,
         NoThrow, MutableSignature, AdapterLeak, AsyncVoid, ImpureApi, IgnoredResult, ExhaustiveSwitch,
-        ReferenceEqualityInRecord, ThrowingCall);
+        ReferenceEqualityInRecord, ThrowingCall, RuleSwitchedOff, AdapterPlacement, ReferenceOutsidePolicy);
 
     // Configuration -----------------------------------------------------------
 
@@ -155,6 +177,10 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
     // .editorconfig / .globalconfig keys. Both take comma-separated lists.
     private const string LegacyNamespacesKey = "functional_lint.legacy_namespaces";
     private const string ImpureApisKey = "functional_lint.impure_apis";
+    // Policy keys: unset means no restriction. Set (even to "none") means only what's listed.
+    public const string AdapterNamespacesKey = "functional_lint.adapter_namespaces";
+    public const string AllowedReferencesKey = "functional_lint.allowed_references";
+    public const string MayLowerKey = "functional_lint.may_lower";
 
     private static readonly (string MetadataName, string Alternative)[] MutableTypes =
     {
@@ -250,6 +276,14 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
 
         // Runs only on adapters, so it is deliberately not guarded.
         context.RegisterSymbolAction(AnalyzeAdapterSignature, SymbolKind.Method, SymbolKind.Property, SymbolKind.Field);
+        // Policy rules: about adapters and the project itself, so not guarded either.
+        context.RegisterSyntaxNodeAction(AnalyzeAdapterPlacement, SyntaxKind.Attribute);
+        context.RegisterCompilationAction(AnalyzeReferences);
+        context.RegisterSyntaxTreeAction(ctx =>
+        {
+            var mayLower = PolicyList(ctx.Options.AnalyzerConfigOptionsProvider.GetOptions(ctx.Tree), MayLowerKey) ?? ImmutableArray<string>.Empty;
+            foreach (var found in SwitchOffs(ctx.Tree, mayLower, ctx.CancellationToken)) ctx.ReportDiagnostic(found);
+        });
 
         context.RegisterCompilationStartAction(start =>
         {
@@ -1146,6 +1180,104 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
             || _members.Contains(Key(type.OriginalDefinition, member.Name));
 
         private static string Key(ITypeSymbol type, string member) => type.ToDisplayString() + "." + member;
+    }
+
+    // FP0016 Checks switched off ----------------------------------------------
+
+    private const string RemoveIt = "Remove it and fix the code it hides.";
+
+    /// <summary>
+    /// What turns checks off inside a file: '#pragma warning disable', [SuppressMessage] and '#nullable disable'.
+    /// Public so the gate can run the same scan where a pragma can't hide FP0016 itself.
+    /// </summary>
+    public static IEnumerable<Diagnostic> SwitchOffs(SyntaxTree tree, ImmutableArray<string> mayLower, CancellationToken ct)
+    {
+        bool Allowed(string id) => mayLower.Contains(id, StringComparer.OrdinalIgnoreCase);
+        var root = tree.GetRoot(ct);
+
+        foreach (var trivia in root.DescendantTrivia(descendIntoTrivia: true))
+        {
+            if (trivia.GetStructure() is PragmaWarningDirectiveTriviaSyntax pragma
+                && pragma.DisableOrRestoreKeyword.IsKind(SyntaxKind.DisableKeyword)
+                && (pragma.ErrorCodes.Count == 0 || pragma.ErrorCodes.Any(code => !Allowed(code.ToString().Trim()))))
+                yield return Diagnostic.Create(RuleSwitchedOff, pragma.GetLocation(), Short(pragma.ToString()), "turns checks off", RemoveIt);
+            else if (trivia.GetStructure() is NullableDirectiveTriviaSyntax nullable
+                && nullable.SettingToken.IsKind(SyntaxKind.DisableKeyword) && !Allowed("nullable"))
+                yield return Diagnostic.Create(RuleSwitchedOff, nullable.GetLocation(), Short(nullable.ToString()), "turns nullable checks off", RemoveIt);
+        }
+
+        foreach (var attribute in root.DescendantNodes().OfType<AttributeSyntax>())
+        {
+            var name = attribute.Name.ToString();
+            var simple = name.Substring(name.LastIndexOf('.') + 1);
+            if (simple is not ("SuppressMessage" or "SuppressMessageAttribute" or "UnconditionalSuppressMessage" or "UnconditionalSuppressMessageAttribute"))
+                continue;
+            // [SuppressMessage("Category", "FP0001:Title")]: the rule ID is the second argument, up to a colon.
+            var id = attribute.ArgumentList?.Arguments.Skip(1).FirstOrDefault()?.Expression is LiteralExpressionSyntax literal
+                ? literal.Token.ValueText.Split(':')[0].Trim() : "";
+            if (!Allowed(id))
+                yield return Diagnostic.Create(RuleSwitchedOff, attribute.GetLocation(), Short($"[{attribute}]"), "turns checks off", RemoveIt);
+        }
+    }
+
+    private static string Short(string code)
+    {
+        var line = code.Trim().Split('\n')[0].Trim();
+        return line.Length <= 60 ? line : line.Substring(0, 57) + "...";
+    }
+
+    // FP0017 / FP0018 Policy --------------------------------------------------
+
+    // A key that's set (even to "none" or nothing) restricts; an unset key doesn't.
+    private static ImmutableArray<string>? PolicyList(AnalyzerConfigOptions options, string key) =>
+        options.TryGetValue(key, out var value)
+            ? SplitList(value).Where(v => !v.Equals("none", StringComparison.OrdinalIgnoreCase)).ToImmutableArray()
+            : null;
+
+    private static void AnalyzeAdapterPlacement(SyntaxNodeAnalysisContext ctx)
+    {
+        var attribute = (AttributeSyntax)ctx.Node;
+        if (ctx.SemanticModel.GetSymbolInfo(attribute, ctx.CancellationToken).Symbol?.ContainingType?.Name != AdapterAttributeName) return;
+        if (PolicyList(ctx.Options.AnalyzerConfigOptionsProvider.GetOptions(attribute.SyntaxTree), AdapterNamespacesKey) is not { } allowed) return;
+
+        // What it marks: a type, member, local function or lambda. Its namespace is what counts.
+        var marked = ctx.SemanticModel.GetDeclaredSymbol(attribute.Parent!.Parent!, ctx.CancellationToken)
+            ?? ctx.SemanticModel.GetSymbolInfo(attribute.Parent!.Parent!, ctx.CancellationToken).Symbol
+            ?? ctx.ContainingSymbol;
+        if (marked is null || IsInNamespaces(marked, allowed)) return;
+
+        ctx.ReportDiagnostic(Diagnostic.Create(AdapterPlacement, attribute.GetLocation(),
+            marked.Name.Length > 0 ? marked.Name : "lambda",
+            allowed.IsEmpty ? ", and this project allows none" : $" outside '{string.Join(", ", allowed)}'",
+            allowed.IsEmpty ? "to a shell project" : "there"));
+    }
+
+    private static void AnalyzeReferences(CompilationAnalysisContext ctx)
+    {
+        if (PolicyList(ctx.Options.AnalyzerConfigOptionsProvider.GlobalOptions, AllowedReferencesKey) is not { } allowed) return;
+
+        foreach (var reference in ctx.Compilation.References)
+        {
+            if (IsDotNetBaseLibrary(reference)) continue;
+            if (ctx.Compilation.GetAssemblyOrModuleSymbol(reference) is not IAssemblySymbol assembly) continue;
+            var name = assembly.Identity.Name;
+            if (allowed.Any(a => a.EndsWith("*", StringComparison.Ordinal)
+                    ? name.StartsWith(a.Substring(0, a.Length - 1), StringComparison.OrdinalIgnoreCase)
+                    : name.Equals(a, StringComparison.OrdinalIgnoreCase))) continue;
+            ctx.ReportDiagnostic(Diagnostic.Create(ReferenceOutsidePolicy, Location.None, name));
+        }
+    }
+
+    // The .NET base library: assemblies from the Microsoft.NETCore.App reference pack, in a folder named after it
+    // (the SDK's packs/Microsoft.NETCore.App.Ref/11.0.0, NuGet's microsoft.netcore.app.ref/11.0.0, or an unpacked
+    // Microsoft.NETCore.App.Ref.11.0.0). Not ASP.NET Core's or Windows Desktop's packs, and not Microsoft's NuGet packages.
+    private static bool IsDotNetBaseLibrary(MetadataReference reference)
+    {
+        if (reference is not PortableExecutableReference { FilePath: { } path }) return false;
+        const string pack = "/microsoft.netcore.app.ref";
+        var normal = path.Replace('\\', '/');
+        var at = normal.IndexOf(pack, StringComparison.OrdinalIgnoreCase);
+        return at >= 0 && at + pack.Length < normal.Length && normal[at + pack.Length] is '/' or '.';
     }
 
     // Exemptions --------------------------------------------------------------

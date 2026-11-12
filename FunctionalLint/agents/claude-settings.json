@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "deny": [
+      "Edit(**/*.csproj)",
+      "Edit(**/*.props)",
+      "Edit(**/*.targets)",
+      "Edit(**/.editorconfig)",
+      "Edit(**/*.globalconfig)",
+      "Edit(**/functionallint.policy)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          { "type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/FunctionalLint/agents/claude-code-hook.sh", "timeout": 120 }
+        ]
+      }
+    ]
+  }
+}

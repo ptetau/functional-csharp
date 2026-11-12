@@ -9,7 +9,7 @@ namespace Functional;
 /// Lookups never throw: use <see cref="Find"/>, <see cref="TryGetValue"/> or <see cref="GetValueOrDefault"/>.
 /// </summary>
 [ValueEquality]
-[System.Text.Json.Serialization.JsonConverter(typeof(ValueListJsonConverter))]
+[System.Text.Json.Serialization.JsonConverter(typeof(Adapters.ValueListJsonConverter))]
 public readonly struct ValueMap<TKey, TValue> : IReadOnlyCollection<KeyValuePair<TKey, TValue>>, IEquatable<ValueMap<TKey, TValue>>
     where TKey : notnull
 {

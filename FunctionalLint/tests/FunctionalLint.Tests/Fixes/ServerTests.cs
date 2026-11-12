@@ -203,4 +203,37 @@ public class ServerTests
             Directory.Delete(folder, recursive: true);
         }
     }
+    [Fact]
+    public async Task A_policy_core_that_stopped_loading_FunctionalLint_is_still_checked_and_reported()
+    {
+        // The project file lost its FunctionalCore.props import, which would silently switch every check off.
+        var folder = Directory.CreateTempSubdirectory("heal-policy").FullName;
+        try
+        {
+            File.WriteAllText(Path.Combine(folder, "functionallint.policy"), "is_global = true\nfunctional_lint.cores = Core/Core.csproj\n");
+            Directory.CreateDirectory(Path.Combine(folder, "Core"));
+            var project = Path.Combine(folder, "Core", "Core.csproj");
+            File.WriteAllText(project, """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup><TargetFramework>net11.0</TargetFramework><Nullable>enable</Nullable></PropertyGroup>
+                </Project>
+                """);
+            File.WriteAllText(Path.Combine(folder, "Core", "Prices.cs"),
+                "namespace Core;\npublic static class Prices { public static int Total(int[] xs) { var t = 0; foreach (var x in xs) t += x; return t; } }\n");
+            Run("dotnet", $"restore \"{project}\" -nodeReuse:false --disable-build-servers -v q");
+
+            var loaded = await Checker.LoadAsync(project);
+            using (loaded.Workspace)
+            {
+                var (code, report) = await Checker.CheckAsync(loaded.Workspace.CurrentSolution, loaded.Functional, null, folder, Stopwatch.StartNew());
+                Assert.Equal(1, code);
+                Assert.Contains("error FP0016: 'Core' is a policy core but doesn't load FunctionalLint. Restore its import of FunctionalCore.props.", report);
+                Assert.Contains("FP0001", report);   // and every rule still runs
+            }
+        }
+        finally
+        {
+            Directory.Delete(folder, recursive: true);
+        }
+    }
 }

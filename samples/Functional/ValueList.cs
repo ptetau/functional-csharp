@@ -19,7 +19,7 @@ public sealed class ValueEqualityAttribute : Attribute;
 /// </summary>
 [ValueEquality]
 [CollectionBuilder(typeof(ValueList), nameof(ValueList.Create))]
-[System.Text.Json.Serialization.JsonConverter(typeof(ValueListJsonConverter))]
+[System.Text.Json.Serialization.JsonConverter(typeof(Adapters.ValueListJsonConverter))]
 public readonly struct ValueList<T> : IReadOnlyList<T>, IEquatable<ValueList<T>>
 {
     private readonly ImmutableArray<T> _items;

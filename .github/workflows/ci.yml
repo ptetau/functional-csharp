@@ -40,14 +40,33 @@ jobs:
         run: dotnet test samples/Samples.slnx
 
       # The heal tool end to end, the way a person or an agent runs it.
-      - name: heal.sh --check on a sample core
+      # The gate uses main's policy for pull requests, so a PR can't loosen the rules it's checked against.
+      - name: Use main's policy for the gate
+        id: policy
+        shell: bash
+        run: |
+          dir="$(cygpath -m "$RUNNER_TEMP" 2>/dev/null || echo "$RUNNER_TEMP")"
+          path="$dir/functionallint.policy"
+          if [[ -n "${GITHUB_BASE_REF:-}" ]] && git fetch --quiet --depth=1 origin "$GITHUB_BASE_REF" \
+             && git show FETCH_HEAD:functionallint.policy > "$path" 2>/dev/null; then
+            echo "The gate uses $GITHUB_BASE_REF's functionallint.policy."
+            git diff --quiet FETCH_HEAD -- functionallint.policy \
+              || echo "::warning file=functionallint.policy::This pull request changes the policy. The gate used $GITHUB_BASE_REF's copy; the change applies once it's merged."
+          else
+            cp functionallint.policy "$path"
+            echo "The gate uses this commit's functionallint.policy."
+          fi
+          echo "path=$path" >> "$GITHUB_OUTPUT"
+      - name: Gate every functional core (heal.sh --check)
         shell: bash
         env:
           FUNCTIONALLINT_NO_SERVER: "1"
-        run: FunctionalLint/heal.sh samples/Ledger/Ledger.Core/Ledger.Core.csproj --check
-
+          FUNCTIONALLINT_POLICY: ${{ steps.policy.outputs.path }}
+        run: FunctionalLint/heal.sh samples/Samples.slnx --check
       - name: Agent hook and check server, end to end
         shell: bash
+        env:
+          FUNCTIONALLINT_POLICY: ${{ steps.policy.outputs.path }}
         run: FunctionalLint/agents/hook-smoke-test.sh samples/Ledger/Ledger.Core/Model.cs
       - name: Pack the NuGet package
         run: dotnet pack FunctionalLint/src/FunctionalLint.Package -c Release -o artifacts

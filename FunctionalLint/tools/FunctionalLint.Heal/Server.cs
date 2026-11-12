@@ -29,7 +29,7 @@ public static class Server
 
     // Config files MSBuild and the compiler read from a project's folder and every folder above it.
     private static readonly string[] ConfigFileNames =
-        [".editorconfig", ".globalconfig", "Directory.Build.props", "Directory.Build.targets", "Directory.Packages.props"];
+        [".editorconfig", ".globalconfig", "Directory.Build.props", "Directory.Build.targets", "Directory.Packages.props", Policy.FileName];
 
     private static string ToolPath => Assembly.GetExecutingAssembly().Location;
 
