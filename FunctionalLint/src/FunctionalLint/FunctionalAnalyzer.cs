@@ -246,6 +246,10 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         "System.Globalization.CultureInfo.CurrentCulture", "System.Globalization.CultureInfo.CurrentUICulture",
         "System.TimeZoneInfo.Local", "System.IO.Path.GetFullPath", "System.IO.Path.GetTempPath",
         "System.Linq.ParallelEnumerable", "System.Threading.Tasks.Parallel",
+        "System.Diagnostics.Debug", "System.Diagnostics.Trace",
+        "System.Net.Dns", "System.Net.Sockets.Socket", "System.Net.Sockets.TcpClient", "System.Net.Sockets.TcpListener",
+        "System.Net.Sockets.UdpClient", "System.Net.WebRequest", "System.Net.WebClient", "System.Net.HttpListener",
+        "System.Net.Mail.SmtpClient", "System.Net.NetworkInformation.Ping", "System.Net.NetworkInformation.NetworkInterface",
     };
 
     // Not side effects as such, but still hidden inputs: the answer depends on where or how the code runs.
@@ -253,6 +257,19 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
     {
         "System.Environment", "System.Globalization.CultureInfo.CurrentCulture", "System.Globalization.CultureInfo.CurrentUICulture",
         "System.TimeZoneInfo.Local", "System.IO.Path.GetFullPath", "System.IO.Path.GetTempPath",
+        "System.Net.Dns.GetHostName", "System.Net.NetworkInformation.NetworkInterface",
+    };
+
+    // Reflection that reads or runs a member picked at run time, so the compiler can't see what it reaches:
+    // `typeof(DateTime).GetProperty("Now")!.GetValue(null)` is the clock. Looking members up (GetProperty, GetMethods)
+    // is fine; using them is reported.
+    private static readonly string[] ReflectionApis =
+    {
+        "System.Activator", "System.Reflection.MethodBase.Invoke", "System.Reflection.ConstructorInfo.Invoke",
+        "System.Reflection.MethodInvoker", "System.Reflection.ConstructorInvoker",
+        "System.Reflection.PropertyInfo.GetValue", "System.Reflection.PropertyInfo.SetValue",
+        "System.Reflection.FieldInfo.GetValue", "System.Reflection.FieldInfo.SetValue",
+        "System.Reflection.MethodInfo.CreateDelegate", "System.Type.InvokeMember", "System.Delegate.DynamicInvoke",
     };
 
     private static readonly string[] NondeterministicApis = { "System.Linq.ParallelEnumerable", "System.Threading.Tasks.Parallel" };
@@ -312,6 +329,7 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
             start.RegisterOperationAction(GuardOp(AnalyzeEventAssignment), OperationKind.EventAssignment);
             start.RegisterOperationAction(GuardOp(AnalyzeBoundary), ReferenceKinds);
             start.RegisterOperationAction(GuardOp(AnalyzeThrow), OperationKind.Throw);
+            start.RegisterOperationAction(GuardOp(AnalyzeThrowHelper), OperationKind.Invocation);
             start.RegisterOperationAction(GuardOp(AnalyzeIgnoredResult), OperationKind.ExpressionStatement);
             start.RegisterOperationAction(GuardOp(AnalyzeSwitchExpression), OperationKind.SwitchExpression);
             start.RegisterOperationAction(GuardOp(AnalyzeSwitchStatement), OperationKind.Switch);
@@ -458,8 +476,9 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
     private static readonly string[] MutatingApis =
     {
         "System.Array.Fill", "System.Array.Clear", "System.Array.Sort", "System.Array.Reverse", "System.Array.Copy",
-        "System.Array.Resize", "System.Array.ConstrainedCopy",
-        "System.Span<T>.Fill", "System.Span<T>.Clear", "System.Span<T>.CopyTo", "System.Span<T>.TryCopyTo",
+        "System.Array.Resize", "System.Array.ConstrainedCopy", "System.Array.SetValue", "System.Array.Initialize",
+        "System.Buffer.BlockCopy", "System.Buffer.SetByte", "System.Buffer.MemoryCopy",
+        "System.Span<T>.Fill", "System.Span<T>.Clear",
         "System.MemoryExtensions.Sort", "System.MemoryExtensions.Reverse",
         "System.Runtime.InteropServices.ImmutableCollectionsMarshal.AsImmutableArray",
     };
@@ -468,13 +487,23 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
     {
         var method = ((IInvocationOperation)ctx.Operation).TargetMethod;
         var key = method.ContainingType.OriginalDefinition.ToDisplayString() + "." + method.Name;
-        if (!MutatingApis.Contains(key)) return;
+        if (!MutatingApis.Contains(key) && !CopiesIntoBuffer(method)) return;
 
         var (what, remedy) = method.ContainingType.Name == "ImmutableCollectionsMarshal"
             ? ($"'{method.Name}' makes an 'immutable' array that its owner can still change.", "Use ToImmutableArray() instead.")
-            : ($"'{method.ContainingType.Name}.{method.Name}' changes its argument in place.", "Build a new value with LINQ instead.");
+            : method is { IsStatic: false, Name: "SetValue" or "Initialize" }
+                ? ($"'{method.ContainingType.Name}.{method.Name}' changes the array it's called on.", "Build a new array with Select(...).ToArray() instead.")
+                : ($"'{method.ContainingType.Name}.{method.Name}' changes its argument in place.", "Build a new value with LINQ instead.");
         Report(ctx, NoMutation, ctx.Operation.Syntax, what, remedy);
     }
+
+    // `source.CopyTo(destination, 0)` writes into an array, span or memory that already exists: arrays, lists,
+    // immutable collections, strings and spans all have one. (A stream's CopyTo is I/O, which FP0011 covers.)
+    private static bool CopiesIntoBuffer(IMethodSymbol method) =>
+        method.Name is "CopyTo" or "TryCopyTo"
+        && !method.Locations.Any(l => l.IsInSource)
+        && method.Parameters.Any(p => p.Type is IArrayTypeSymbol
+            || p.Type.OriginalDefinition.ToDisplayString() is "System.Array" or "System.Span<T>" or "System.Memory<T>");
 
     private static bool IsFreshBinding(IOperation target) => target switch
     {
@@ -651,6 +680,20 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         ctx.ReportDiagnostic(Diagnostic.Create(NoThrow, keyword.GetLocation()));
     }
 
+    // Library calls that exist to throw: the `ThrowIf...` helpers on exception types (`ArgumentNullException.ThrowIfNull`,
+    // `ArgumentOutOfRangeException.ThrowIfNegative`, `ObjectDisposedException.ThrowIf`...) and `ExceptionDispatchInfo.Throw`.
+    private static void AnalyzeThrowHelper(OperationAnalysisContext ctx)
+    {
+        var method = ((IInvocationOperation)ctx.Operation).TargetMethod;
+        if (method.Locations.Any(l => l.IsInSource)) return;
+
+        var throws = method.Name.StartsWith("ThrowIf", StringComparison.Ordinal) && method.IsStatic
+                && InheritsFrom(method.ContainingType, "System.Exception")
+            || method.Name == "Throw"
+                && method.ContainingType.ToDisplayString() == "System.Runtime.ExceptionServices.ExceptionDispatchInfo";
+        if (throws) Report(ctx, NoThrow, ctx.Operation.Syntax);
+    }
+
     // FP0008 Mutable types in signatures --------------------------------------
 
     private static void AnalyzeSignature(SymbolAnalysisContext ctx, Dictionary<ISymbol, string> banned)
@@ -724,23 +767,13 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
     private static void AnalyzeSwitchExpression(OperationAnalysisContext ctx)
     {
         var op = (ISwitchExpressionOperation)ctx.Operation;
+        if (ReportWidened(ctx, op.Value)) return;
         if (op.Value.Type is not { } type || CheckedKind(type) is null) return;
 
-        // An unguarded arm that matches anything left: `_`, `var x`, the input's own type, `{ }` or `not null`.
-        var underlying = Unwrapped(type);
-        bool IsInput(ITypeSymbol? matched) =>
-            SymbolEqualityComparer.Default.Equals(matched, type) || SymbolEqualityComparer.Default.Equals(matched, underlying);
-        var catchAll = op.Arms.FirstOrDefault(arm => arm.Guard is null && arm.Pattern switch
-        {
-            IDiscardPatternOperation => true,
-            IDeclarationPatternOperation { MatchesNull: true } => true,
-            IDeclarationPatternOperation declaration => IsInput(declaration.MatchedType),
-            ITypePatternOperation typePattern => IsInput(typePattern.MatchedType),
-            IRecursivePatternOperation { DeconstructionSubpatterns.IsEmpty: true, PropertySubpatterns.IsEmpty: true } recursive =>
-                recursive.MatchedType is null || IsInput(recursive.MatchedType),
-            INegatedPatternOperation { Pattern: IConstantPatternOperation { Value.ConstantValue: { HasValue: true, Value: null } } } => true,
-            _ => false,
-        });
+        // An arm that matches anything left: `_`, `var x`, `{ }`, `not null`, or a type every case has (the input's
+        // own type, a base type or interface of it, `object`, `Enum`), unguarded or with a guard that's always true.
+        var catchAll = op.Arms.FirstOrDefault(arm =>
+            (arm.Guard is null || arm.Guard.ConstantValue is { HasValue: true, Value: true }) && MatchesEverything(arm.Pattern, type));
         if (catchAll is null) return;
 
         Report(ctx, ExhaustiveSwitch, catchAll.Pattern.Syntax,
@@ -748,9 +781,65 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
             "List each case instead.");
     }
 
+    private static bool MatchesEverything(IPatternOperation pattern, ITypeSymbol input) => pattern switch
+    {
+        IDiscardPatternOperation => true,
+        IDeclarationPatternOperation { MatchesNull: true } => true,
+        IDeclarationPatternOperation declaration => CoversEveryCase(declaration.MatchedType, input),
+        ITypePatternOperation typePattern => CoversEveryCase(typePattern.MatchedType, input),
+        IRecursivePatternOperation { DeconstructionSubpatterns.IsEmpty: true, PropertySubpatterns.IsEmpty: true } recursive =>
+            recursive.MatchedType is null || CoversEveryCase(recursive.MatchedType, input),
+        INegatedPatternOperation { Pattern: IConstantPatternOperation { Value.ConstantValue: { HasValue: true, Value: null } } } => true,
+        IBinaryPatternOperation { OperatorKind: BinaryOperatorKind.Or } or =>
+            MatchesEverything(or.LeftPattern, input) || MatchesEverything(or.RightPattern, input),
+        _ => false,
+    };
+
+    // A type that every value of the input has: the input itself, one of its base types or interfaces (`object` and
+    // `Enum` included), or for a union, a type every case type has.
+    private static bool CoversEveryCase(ITypeSymbol? matched, ITypeSymbol input)
+    {
+        if (matched is null) return false;
+        var underlying = Unwrapped(input);
+        static bool Has(ITypeSymbol type, ITypeSymbol matched) =>
+            SymbolEqualityComparer.Default.Equals(type, matched)
+            || matched.SpecialType == SpecialType.System_Object
+            || BaseTypes(type).Concat(type.AllInterfaces).Any(t => SymbolEqualityComparer.Default.Equals(t, matched));
+
+        if (SymbolEqualityComparer.Default.Equals(matched, input) || Has(underlying, matched)) return true;
+        var cases = UnionCases(underlying);
+        return !cases.IsEmpty && cases.All(c => Has(c, matched));
+    }
+
+    private static IEnumerable<INamedTypeSymbol> BaseTypes(ITypeSymbol type)
+    {
+        for (var current = type.BaseType; current is not null; current = current.BaseType) yield return current;
+    }
+
+    // A union's case types: the types its one-parameter constructors take (`union Pet(Cat, Dog)` has Pet(Cat) and Pet(Dog)).
+    private static ImmutableArray<ITypeSymbol> UnionCases(ITypeSymbol type) =>
+        CheckedKind(type) == "union" && type is INamedTypeSymbol named
+            ? named.InstanceConstructors.Where(c => c.Parameters.Length == 1).Select(c => c.Parameters[0].Type).ToImmutableArray()
+            : ImmutableArray<ITypeSymbol>.Empty;
+
+    // `(object)shape switch { ... }` and `(int)colour switch { ... }` switch on a type the compiler can't check, so
+    // a catch-all is needed and a new case won't be an error.
+    private static bool ReportWidened(OperationAnalysisContext ctx, IOperation value)
+    {
+        if (value is not IConversionOperation { IsImplicit: false } conversion
+            || conversion.Operand.Type is not { } from || CheckedKind(from) is not { } kind
+            || conversion.Type is not { } to || CheckedKind(to) is not null) return false;
+
+        Report(ctx, ExhaustiveSwitch, conversion.Syntax,
+            $"'{conversion.Syntax}' turns the {kind} '{Display(from)}' into '{Display(to)}', so a new case won't be an error.",
+            $"Use a switch on '{conversion.Operand.Syntax}' that lists each case instead.");
+        return true;
+    }
+
     private static void AnalyzeSwitchStatement(OperationAnalysisContext ctx)
     {
         var op = (ISwitchOperation)ctx.Operation;
+        if (ReportWidened(ctx, op.Value)) return;
         if (op.Value.Type is not { } type || CheckedKind(type) is not { } kind) return;
 
         var keyword = op.Syntax.GetFirstToken();
@@ -969,12 +1058,68 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
 
     // `xs.GroupBy(k).ToDictionary(g => g.Key, ...)` can't have duplicate keys, and `xs.DefaultIfEmpty(0).Max()`
     // can't be empty: FP0015's own advice has been followed.
-    // Keys are unique when the source is groups or distinct items, seen through steps that keep items unique
-    // (filtering, ordering, copying into an array or list) and through a local set to such a sequence:
+    // Keys are unique when the items are groups keyed by `g => g.Key`, or distinct items keyed by themselves (or, after
+    // DistinctBy, by the same selector). The items are followed through steps that keep them unique (filtering,
+    // ordering, copying into an array or list) and through a local set to such a sequence:
     // `var bySku = rows.GroupBy(r => r.Sku).ToImmutableArray(); ... bySku.ToDictionary(g => g.Key, ...)`.
-    private static bool HasUniqueKeys(IInvocationOperation op) =>
-        Origin(op.Instance ?? op.Arguments.FirstOrDefault()?.Value) is IInvocationOperation call
-        && call.TargetMethod.Name is "GroupBy" or "Distinct" or "DistinctBy" or "ToLookup";
+    // A key comparer on the dictionary has to be the one the items were made unique with, written the same way.
+    private static bool HasUniqueKeys(IInvocationOperation op)
+    {
+        if (Origin(op.Instance ?? op.Arguments.FirstOrDefault()?.Value) is not IInvocationOperation call) return false;
+        if (Lambda(ArgumentFor(op, "keySelector")) is not { } key) return false;
+
+        var comparer = ArgumentFor(op, "keyComparer") ?? ArgumentFor(op, "comparer");
+        if (comparer is not null && ArgumentFor(call, "comparer")?.Syntax.ToString() != comparer.Syntax.ToString()) return false;
+
+        return call.TargetMethod.Name switch
+        {
+            "Distinct" => IsIdentity(key),
+            "DistinctBy" => IsIdentity(key) || Lambda(ArgumentFor(call, "keySelector")) is { } distinctBy && SameSelector(key, distinctBy),
+            "GroupBy" or "ToLookup" => IsGroupKey(key),
+            _ => false,
+        };
+    }
+
+    // The argument passed for a parameter, or null if it was left out or is null.
+    private static IOperation? ArgumentFor(IInvocationOperation op, string parameter) =>
+        op.Arguments.FirstOrDefault(a => a.Parameter?.Name == parameter && a.ArgumentKind != ArgumentKind.DefaultValue)?.Value
+            is { ConstantValue: not { HasValue: true, Value: null } } value ? value : null;
+
+    private static IAnonymousFunctionOperation? Lambda(IOperation? argument)
+    {
+        while (argument is IConversionOperation or IDelegateCreationOperation)
+            argument = argument is IConversionOperation c ? c.Operand : ((IDelegateCreationOperation)argument).Target;
+        return argument as IAnonymousFunctionOperation;
+    }
+
+    // What a one-line lambda returns: `x => x.Sku` gives `x.Sku`.
+    private static IOperation? Returned(IAnonymousFunctionOperation lambda)
+    {
+        var value = lambda.Body.Operations.Length == 1 && lambda.Body.Operations[0] is IReturnOperation { ReturnedValue: { } returned }
+            ? returned : null;
+        while (value is IConversionOperation { IsImplicit: true, Conversion.IsIdentity: true } c) value = c.Operand;
+        return value;
+    }
+
+    // `x => x`
+    private static bool IsIdentity(IAnonymousFunctionOperation lambda) =>
+        Returned(lambda) is IParameterReferenceOperation p && SymbolEqualityComparer.Default.Equals(p.Parameter, lambda.Symbol.Parameters.FirstOrDefault());
+
+    // `g => g.Key` on a group from GroupBy or ToLookup.
+    private static bool IsGroupKey(IAnonymousFunctionOperation lambda) =>
+        Returned(lambda) is IPropertyReferenceOperation { Property.Name: "Key", Instance: IParameterReferenceOperation p }
+        && SymbolEqualityComparer.Default.Equals(p.Parameter, lambda.Symbol.Parameters.FirstOrDefault())
+        && p.Type is { } type && type.AllInterfaces.Concat(type is INamedTypeSymbol n ? [n] : [])
+            .Any(i => i.OriginalDefinition.ToDisplayString() == "System.Linq.IGrouping<TKey, TElement>");
+
+    // `s => s.Sku` and `row => row.Sku`: the same expression, whatever the parameter is called.
+    private static bool SameSelector(IAnonymousFunctionOperation a, IAnonymousFunctionOperation b)
+    {
+        if (Returned(a)?.Syntax is not { } x || Returned(b)?.Syntax is not { } y) return false;
+        var (pa, pb) = (a.Symbol.Parameters.FirstOrDefault()?.Name, b.Symbol.Parameters.FirstOrDefault()?.Name);
+        var (ta, tb) = (x.DescendantTokens().ToList(), y.DescendantTokens().ToList());
+        return ta.Count == tb.Count && ta.Zip(tb, (s, t) => s.Text == t.Text || s.Text == pa && t.Text == pb).All(same => same);
+    }
 
     private static readonly HashSet<string> KeepsItemsUnique = new(StringComparer.Ordinal)
     {
@@ -1136,6 +1281,7 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         bool In(string[] list) => list.Contains(typeName) || list.Contains(typeName + "." + member.Name);
         var why = In(AmbientApis) ? "depends on the machine it runs on"
             : In(NondeterministicApis) ? "runs work in an unpredictable order"
+            : In(ReflectionApis) ? "reaches members chosen at run time"
             : "has side effects";
         Report(ctx, ImpureApi, ctx.Operation.Syntax, isWholeType ? type.Name : $"{type.Name}.{member.Name}", why, ImpureRemedy);
     }
@@ -1200,7 +1346,7 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         public static ImpureApis Create(Compilation compilation, string extra)
         {
             var apis = new ImpureApis();
-            foreach (var entry in DefaultImpureApis.Concat(SplitList(extra)))
+            foreach (var entry in DefaultImpureApis.Concat(ReflectionApis).Concat(SplitList(extra)))
             {
                 if (compilation.GetTypeByMetadataName(entry) is { } type)
                 {

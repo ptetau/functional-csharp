@@ -7,18 +7,18 @@ A Roslyn analyzer that keeps a C# project functional. It reports errors at build
 | Rule   | Forbids | Do this instead | Auto-fix |
 |--------|---------|-----------------|----------|
 | [FP0001](docs/rules/FP0001.md) | `for`, `foreach`, `while`, `do`, `goto`, `.ForEach(...)` | LINQ, `Aggregate`, recursion | |
-| [FP0002](docs/rules/FP0002.md) | Reassigning variables, `+=`, `++`, setting fields, array writes, event `+=`, `out`/`ref` to existing variables, `Array.Fill` and friends | New values, `with` expressions | |
+| [FP0002](docs/rules/FP0002.md) | Reassigning variables, `+=`, `++`, setting fields, array writes, event `+=`, `out`/`ref` to existing variables, `Array.Fill`, `CopyTo` into an existing array and friends | New values, `with` expressions | |
 | [FP0003](docs/rules/FP0003.md) | Non-readonly fields, `set` accessors, non-readonly record structs | `readonly`, `init`, `readonly record struct` | Yes |
 | [FP0004](docs/rules/FP0004.md) | Plain classes | Records for data, static classes for functions | When safe |
 | [FP0005](docs/rules/FP0005.md) | Creating `List<T>`, `Dictionary<,>`, `StringBuilder`, builders, streams and other mutable collections, including `ToList()`; locals typed `IList<T>` etc. | `System.Collections.Immutable` types | Locals |
 | [FP0006](docs/rules/FP0006.md) | Calling legacy code directly | Call it through an `[ImperativeAdapter]` | |
-| [FP0007](docs/rules/FP0007.md) | `throw` | Return an `Error` on your `Result<T>` | |
+| [FP0007](docs/rules/FP0007.md) | `throw`, `ThrowIf...` helpers, `ExceptionDispatchInfo.Throw` | Return an `Error` on your `Result<T>` | |
 | [FP0008](docs/rules/FP0008.md) | `IList<T>`, `ICollection<T>`, `IDictionary<,>`, `List<T>` etc. in signatures | `IReadOnlyList<T>`, `ImmutableArray<T>` | Yes |
 | [FP0009](docs/rules/FP0009.md) | Adapters with legacy types in their public signatures | Return functional types | |
 | [FP0010](docs/rules/FP0010.md) | `async void` | Return `Task` | Yes |
-| [FP0011](docs/rules/FP0011.md) | Clock, `Guid.NewGuid`, `Random`, `Console`, file I/O, `HttpClient`, current culture, parallel LINQ, hidden `Environment.NewLine` (indented JSON/XML, `ReplaceLineEndings()`) and similar | An adapter, or pass the value in | Line endings |
+| [FP0011](docs/rules/FP0011.md) | Clock, `Guid.NewGuid`, `Random`, `Console`, `Debug`, file I/O, `HttpClient` and other network APIs, reflection that reads or runs members, current culture, parallel LINQ, hidden `Environment.NewLine` (indented JSON/XML, `ReplaceLineEndings()`) and similar | An adapter, or pass the value in | Line endings |
 | [FP0012](docs/rules/FP0012.md) | Ignoring the result of `list.Add(x)`, LINQ, string, date or `Math` methods, or methods on your own records | Use the result: `var updated = list.Add(x)` | |
-| [FP0013](docs/rules/FP0013.md) | `_` arms and switch statements over enums, `closed` types and unions | A switch expression that lists every case | |
+| [FP0013](docs/rules/FP0013.md) | Catch-all arms (`_`, `var x`, `object`...), switch statements and switching on a cast, over enums, `closed` types and unions | A switch expression that lists every case | |
 | [FP0014](docs/rules/FP0014.md) | Collections that compare by reference (`ImmutableArray`, lists, arrays) inside records | `ValueList<T>` or another `[ValueEquality]` type | |
 | [FP0015](docs/rules/FP0015.md) | Calls that throw: `First`, `Single`, `Parse`, `dict[key]`, `ToDictionary`... | `FirstOrDefault`, list patterns, `TryParse`, `TryGetValue` | |
 | [FP0016](docs/rules/FP0016.md) | `#pragma warning disable`, `[SuppressMessage]`, `#nullable disable`; with a policy, also lowered rules, nullable off, files marked generated, a core that stopped loading FunctionalLint | Fix what the rule reports | |
@@ -56,7 +56,7 @@ public static string Describe(Payment p) => p switch
 };
 ```
 
-Add a `Voucher` case later and every switch that doesn't handle it stops compiling (CS8509, an error under the props file). FP0013 stops the two ways around that: a `_` arm, and a switch statement. A `union Pet(Cat, Dog)` works the same way when the cases already exist as separate types.
+Add a `Voucher` case later and every switch that doesn't handle it stops compiling (CS8509, an error under the props file). FP0013 stops the ways around that: a catch-all arm (`_`, `var x`, `object`...), a switch statement, and switching on a cast such as `(object)p`. A `union Pet(Cat, Dog)` works the same way when the cases already exist as separate types.
 
 ## Set up a core project
 
@@ -258,7 +258,7 @@ In test sources, `{|FP0001:text|}` means "expect FP0001 on exactly this text". A
 
 ## What it can't catch
 
-- **Mutating methods on library types.** `Array.Sort`, `Array.Fill` and similar are caught (FP0002), but a method that changes a mutable object from a library isn't. FP0005 and FP0008 keep most mutable collections out in the first place.
+- **Mutating methods on library types.** `Array.Sort`, `Array.Fill`, `CopyTo` into an existing array and similar are caught (FP0002), but a method that changes a mutable object from a library isn't. FP0005 and FP0008 keep most mutable collections out in the first place.
 - **Mutable objects in readonly fields**, such as a `static readonly JsonSerializerOptions`. `readonly` protects only the reference.
 - **Every way to throw.** FP0015 covers the common calls; indexers on arrays and lists, overflow and casts aren't covered. Random-input tests find the rest: see [FP0015](docs/rules/FP0015.md#what-it-doesnt-cover).
 - **Mutation inside libraries you call.**

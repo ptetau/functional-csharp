@@ -127,6 +127,78 @@ public class FP0011_MoreApis
         """);
 }
 
+public class FP0011_ReflectionDebugAndNetwork
+{
+    [Fact]
+    public Task Reflection_that_reads_or_runs_members_is_flagged() => Verify("""
+        using System;
+        using System.Reflection;
+
+        public static class C
+        {
+            public static object? A() => {|FP0011:Type.GetType("System.DateTime")!.GetProperty("Now")!.GetValue(null)|};
+            public static object? B(MethodInfo m) => {|FP0011:m.Invoke(null, null)|};
+            public static object? D(Type t) => {|FP0011:Activator.CreateInstance(t)|};
+            public static object? E(FieldInfo f) => {|FP0011:f.GetValue(null)|};
+            public static object? F(ConstructorInfo c) => {|FP0011:c.Invoke(null)|};
+            public static object? G(Delegate d) => {|FP0011:d.DynamicInvoke()|};
+            public static Func<DateTime> H(MethodInfo m) => (Func<DateTime>){|FP0011:m.CreateDelegate(typeof(Func<DateTime>))|};
+        }
+        """);
+
+    [Fact]
+    public Task Debug_trace_and_network_apis_are_flagged() => Verify("""
+        using System.Diagnostics;
+        using System.Net;
+
+        public static class C
+        {
+            public static void A(string s) => {|FP0011:Debug.WriteLine(s)|};
+            public static void B(string s) => {|FP0011:Trace.TraceInformation(s)|};
+            public static void D(bool ok) => {|FP0011:Debug.Assert(ok)|};
+            public static string E() => {|FP0011:Dns.GetHostName()|};
+            public static IPAddress[] F(string host) => {|FP0011:Dns.GetHostAddresses(host)|};
+        }
+        """);
+
+    [Fact]
+    public Task Looking_members_up_and_pure_network_types_are_allowed() => Verify("""
+        using System;
+        using System.Net;
+        using System.Reflection;
+
+        public static class C
+        {
+            public static PropertyInfo? A() => typeof(DateTime).GetProperty("Now");
+            public static int B() => typeof(C).GetMethods().Length;
+            public static string D(MethodInfo m) => m.Name;
+            public static bool E(string s) => IPAddress.TryParse(s, out _);
+            public static string F(string s) => WebUtility.UrlEncode(s);
+            public static int G() => (int)HttpStatusCode.NotFound;
+            public static string H() => nameof(System.Diagnostics.Debug);
+        }
+        """);
+
+    [Fact]
+    public async Task Each_kind_says_why()
+    {
+        var findings = await Diagnose("""
+            static class C
+            {
+                static object? A(System.Type t) => System.Activator.CreateInstance(t);
+                static string B() => System.Net.Dns.GetHostName();
+                static void D(string s) => System.Diagnostics.Trace.WriteLine(s);
+            }
+            """);
+
+        Assert.Equal(new[] {
+            "'Activator.CreateInstance' reaches members chosen at run time. Call it from an [ImperativeAdapter], or pass the value in.",
+            "'Dns.GetHostName' depends on the machine it runs on. Call it from an [ImperativeAdapter], or pass the value in.",
+            "'Trace.WriteLine' has side effects. Call it from an [ImperativeAdapter], or pass the value in.",
+        }, findings.Where(f => f.Id == "FP0011").Select(f => f.Message));
+    }
+}
+
 public class FP0011_IndentedJson
 {
     [Fact]
