@@ -5,49 +5,91 @@ using System.Threading.Tasks;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Diagnostics;
+using Microsoft.CodeAnalysis.Testing;
 using Xunit;
 
 namespace FunctionalLint.Tests.Rules;
 
 public class FP0018_ReferencesOutsidePolicy
 {
-    // A core that calls into the .NET base library and two libraries of its own: Acme.Db and Functional. Plus a
-    // stand-in for a .NET Standard facade, at the path NuGet unpacks NETStandard.Library to: that's the base library.
-    private static async Task<ImmutableArray<Diagnostic>> Findings(string? allowed)
-    {
-        var references = await Lint.References.ResolveAsync(LanguageNames.CSharp, CancellationToken.None);
-        CSharpCompilation Library(string name) => CSharpCompilation.Create(name,
-            [CSharpSyntaxTree.ParseText($"namespace {name} {{ public static class Api {{ public static int Query() => 1; }} }}")], references,
-            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
-        using var image = new System.IO.MemoryStream();
-        Library("Standard").Emit(image);
-        var standard = MetadataReference.CreateFromImage(image.ToArray(),
-            filePath: "/home/me/.nuget/packages/netstandard.library/2.0.3/build/netstandard2.0/ref/Standard.dll");
+    // A library the core references: a project reference when Path is null, else a file at that path. DotNetKey
+    // signs it with the key of .NET's own assemblies.
+    private sealed record Library(string Name, string? Path = null, bool DotNetKey = false);
 
-        var compilation = CSharpCompilation.Create("Core",
-            [CSharpSyntaxTree.ParseText("public static class C { static int A() => Acme.Db.Api.Query(); static int B() => Functional.Api.Query(); static int D() => Standard.Api.Query(); }")],
-            references.Add(Library("Acme.Db").ToMetadataReference()).Add(Library("Functional").ToMetadataReference()).Add(standard),
-            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+    // A core that references its base library plus the given libraries, and calls each one. Returns the FP0018 messages.
+    private static async Task<string[]> Findings(string? allowed, ReferenceAssemblies? framework = null, params Library[] libraries)
+    {
+        var references = await (framework ?? Lint.References).ResolveAsync(LanguageNames.CSharp, CancellationToken.None);
+        var dotNetKey = CSharpCompilation.Create("Probe", [], references)
+            .GetSpecialType(SpecialType.System_Object).ContainingAssembly.Identity.PublicKey;
+
+        MetadataReference Reference(Library library)
+        {
+            var options = new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary);
+            if (library.DotNetKey) options = options.WithCryptoPublicKey(dotNetKey).WithPublicSign(true);
+            var compilation = CSharpCompilation.Create(library.Name,
+                [CSharpSyntaxTree.ParseText($"namespace {library.Name} {{ public static class Api {{ public static int Query() => 1; }} }}")], references, options);
+            if (library.Path is null) return compilation.ToMetadataReference();
+            using var image = new System.IO.MemoryStream();
+            Assert.True(compilation.Emit(image).Success);
+            return MetadataReference.CreateFromImage(image.ToArray(), filePath: library.Path);
+        }
+
+        var uses = string.Join(" ", libraries.Select((l, i) => $"static int M{i}() => {l.Name}.Api.Query();"));
+        var core = CSharpCompilation.Create("Core", [CSharpSyntaxTree.ParseText($"public static class C {{ {uses} }}")],
+            references.AddRange(libraries.Select(Reference)), new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
         var config = allowed is null ? "" : "functional_lint.allowed_references = " + allowed;
         var options = new AnalyzerOptions([], new GlobalConfig(config));
-        return await compilation.WithAnalyzers([new FunctionalAnalyzer()], options).GetAnalyzerDiagnosticsAsync();
+        var found = await core.WithAnalyzers([new FunctionalAnalyzer()], options).GetAnalyzerDiagnosticsAsync();
+        return found.Where(d => d.Id == "FP0018").Select(d => d.GetMessage()).ToArray();
     }
+
+    private static readonly Library[] OwnLibraries = [new("Acme.Db"), new("Functional")];
 
     [Fact]
     public async Task Libraries_outside_the_list_are_reported_and_the_base_library_is_not()
     {
-        var found = (await Findings("Functional")).Where(d => d.Id == "FP0018").ToList();
         Assert.Equal(
             ["'Api.Query' comes from 'Acme.Db', which isn't on this core's list of allowed references. Move the code that uses it to a shell project."],
-            found.Select(d => d.GetMessage()));
+            await Findings("Functional", libraries: OwnLibraries));
     }
 
     [Fact]
     public async Task A_trailing_star_allows_a_family_and_no_key_means_no_check()
     {
-        Assert.DoesNotContain(await Findings("Functional, Acme.*"), d => d.Id == "FP0018");
-        Assert.DoesNotContain(await Findings(null), d => d.Id == "FP0018");
-        Assert.Equal(2, (await Findings("none")).Count(d => d.Id == "FP0018"));
+        Assert.Empty(await Findings("Functional, Acme.*", libraries: OwnLibraries));
+        Assert.Empty(await Findings(null, libraries: OwnLibraries));
+        Assert.Equal(2, (await Findings("none", libraries: OwnLibraries)).Length);
+    }
+
+    [Fact]
+    public async Task A_netstandard_core_may_use_the_NETStandard_Library_pack()
+    {
+        Assert.Equal(
+            ["'Api.Query' comes from 'Acme.Db', which isn't on this core's list of allowed references. Move the code that uses it to a shell project."],
+            await Findings("none", ReferenceAssemblies.NetStandard.NetStandard20, new Library("Acme.Db")));
+    }
+
+    [Fact]
+    public async Task A_library_in_a_folder_named_like_the_pack_is_still_reported()
+    {
+        // The real pack folder, wherever this machine keeps it.
+        var references = await Lint.References.ResolveAsync(LanguageNames.CSharp, CancellationToken.None);
+        var pack = System.IO.Path.GetDirectoryName(references.OfType<PortableExecutableReference>()
+            .First(r => System.IO.Path.GetFileName(r.FilePath) == "System.Runtime.dll").FilePath)!;
+
+        var found = await Findings("none", libraries:
+        [
+            // Copied into the repository, in a folder named after the pack.
+            new("Newtonsoft.Json", "/repo/libs/microsoft.netcore.app.ref/Newtonsoft.Json.dll"),
+            // Even signed with .NET's key: that folder isn't where this core's base library comes from.
+            new("Acme.Signed", "/repo/libs/microsoft.netcore.app.ref/11.0.0/ref/net11.0/Acme.Signed.dll", DotNetKey: true),
+            // Copied into the real pack, but not signed by .NET.
+            new("Acme.Copied", System.IO.Path.Combine(pack, "Acme.Copied.dll")),
+            // In the real pack and signed with .NET's key: as far as a compilation can tell, part of .NET.
+            new("Acme.InPack", System.IO.Path.Combine(pack, "Acme.InPack.dll"), DotNetKey: true),
+        ]);
+        Assert.Equal(["Acme.Copied", "Acme.Signed", "Newtonsoft.Json"], found.Select(m => m.Split('\'')[3]).Order());
     }
 
     private sealed class GlobalConfig(string line) : AnalyzerConfigOptionsProvider

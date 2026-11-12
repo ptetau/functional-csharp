@@ -1,12 +1,15 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Linq;
+using System.Reflection;
 using Microsoft.CodeAnalysis;
 
 namespace FunctionalLint.Adapters;
 
 // FunctionalLint is checked by its own rules (functionallint.policy lists it as a core). This file is its imperative
-// part: the only mutable state (caches shared by callbacks running in parallel) and the only loop over side effects.
+// part: the only mutable state (caches shared by callbacks running in parallel), the only loop over side effects, and
+// the one place it reads Roslyn by reflection.
 
 /// <summary>Marks what the rules skip. Matched by name, like the copy a consuming project defines.</summary>
 [AttributeUsage(AttributeTargets.All)]
@@ -59,5 +62,27 @@ internal static class Sequences
     public static IEnumerable<T> Unfold<T>(T? first, Func<T, T?> next) where T : class
     {
         for (var current = first; current is not null; current = next(current)) yield return current;
+    }
+}
+
+[ImperativeAdapter]
+internal static class NewerRoslyn
+{
+    // ITypeSymbol.IsClosed (C# 15 `closed` types) is still experimental, and this analyzer is built against an older
+    // Roslyn. So it's read by reflection, and quietly done without if it isn't there or ever goes away.
+    private static readonly PropertyInfo? IsClosedProperty =
+        typeof(ITypeSymbol).GetRuntimeProperties().FirstOrDefault(p => p.Name == "IsClosed" && p.PropertyType == typeof(bool));
+
+    /// <summary>Whether the compiler says a type is `closed`: false when this Roslyn can't tell.</summary>
+    public static bool IsClosed(ITypeSymbol type)
+    {
+        try
+        {
+            return IsClosedProperty?.GetValue(type) is true;
+        }
+        catch (TargetInvocationException)
+        {
+            return false;
+        }
     }
 }

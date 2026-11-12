@@ -33,7 +33,7 @@ public sealed class MutableStateFix : CodeFixProvider
         switch (token.Parent)
         {
             case VariableDeclaratorSyntax { Parent.Parent: FieldDeclarationSyntax field } declarator
-                when await CanBeSetOnceAsync(document, declarator, context.CancellationToken).ConfigureAwait(false):
+                when await CanBeReadonlyAsync(document, declarator, context.CancellationToken).ConfigureAwait(false):
                 Register(context, diagnostic, "Make field readonly", "FP0003",
                     () => FixHelpers.Replace(document, root, field, MakeReadonly(field)));
                 break;
@@ -70,11 +70,15 @@ public sealed class MutableStateFix : CodeFixProvider
     // A readonly field can only be set by its initializer, a constructor or an init accessor (a `set` accessor
     // becomes one under this same fix). Without any of those it would stay default forever, which compiles but
     // leaves a dead field (e.g. a struct filled in by object initialisers).
-    private static async Task<bool> CanBeSetOnceAsync(Document document, VariableDeclaratorSyntax declarator, CancellationToken ct)
+    //
+    // The field's type must also copy safely. Calling a method on a readonly field of a mutable struct runs it on a
+    // copy, so `_items.MoveNext()` on an `ImmutableArray<int>.Enumerator` would stop moving: that field is left alone.
+    private static async Task<bool> CanBeReadonlyAsync(Document document, VariableDeclaratorSyntax declarator, CancellationToken ct)
     {
-        if (declarator.Initializer is not null) return true;
         var model = await document.GetSemanticModelAsync(ct).ConfigureAwait(false);
         if (model?.GetDeclaredSymbol(declarator, ct) is not IFieldSymbol field) return false;
+        if (!CopiesSafely(field.Type)) return false;
+        if (declarator.Initializer is not null) return true;
         var type = field.ContainingType;
         return field.IsStatic
             ? type.StaticConstructors.Any()
@@ -82,6 +86,24 @@ public sealed class MutableStateFix : CodeFixProvider
               || type.GetMembers().OfType<IPropertySymbol>().Any(p => !p.IsStatic && p.SetMethod is not null)
               || type.DeclaringSyntaxReferences.Any(r => r.GetSyntax(ct) is TypeDeclarationSyntax { ParameterList: not null });
     }
+
+    // Types whose methods can't change the value they're called on: classes, primitives, enums, readonly structs,
+    // and structs of this solution whose fields are all readonly. Tuples and nullables copy safely if what they hold
+    // does. A type parameter might be a mutable struct, unless it's constrained to a class.
+    private static bool CopiesSafely(ITypeSymbol type) => type switch
+    {
+        { IsReferenceType: true } => true,
+        ITypeParameterSymbol => false,
+        IPointerTypeSymbol or IFunctionPointerTypeSymbol => true,
+        { TypeKind: TypeKind.Enum } => true,
+        { SpecialType: not SpecialType.None } => true,
+        INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } nullable => CopiesSafely(nullable.TypeArguments[0]),
+        INamedTypeSymbol { IsTupleType: true } tuple => tuple.TupleElements.All(e => CopiesSafely(e.Type)),
+        INamedTypeSymbol { IsReadOnly: true } => true,
+        INamedTypeSymbol named => named.Locations.Any(l => l.IsInSource)
+            && named.GetMembers().OfType<IFieldSymbol>().Where(f => !f.IsStatic && !f.IsConst).All(f => f.IsReadOnly),
+        _ => false,
+    };
 
     private static FieldDeclarationSyntax MakeReadonly(FieldDeclarationSyntax field)
     {

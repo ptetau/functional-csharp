@@ -7,21 +7,21 @@ A Roslyn analyzer that keeps a C# project functional. It reports errors at build
 | Rule   | Forbids | Do this instead | Auto-fix |
 |--------|---------|-----------------|----------|
 | [FP0001](docs/rules/FP0001.md) | `for`, `foreach`, `while`, `do`, `goto`, `.ForEach(...)` | LINQ, `Aggregate`, recursion | |
-| [FP0002](docs/rules/FP0002.md) | Reassigning variables, `+=`, `++`, setting fields, array writes, event `+=`, `out`/`ref` to existing variables, `Array.Fill` and friends | New values, `with` expressions | |
-| [FP0003](docs/rules/FP0003.md) | Non-readonly fields, `set` accessors, non-readonly record structs | `readonly`, `init`, `readonly record struct` | Yes |
+| [FP0002](docs/rules/FP0002.md) | Reassigning variables, `+=`, `++`, setting fields, array writes, event `+=`, `out`/`ref` to existing variables, `Array.Fill`, `CopyTo` into an existing array and friends | New values, `with` expressions | |
+| [FP0003](docs/rules/FP0003.md) | Non-readonly fields, `set` accessors, non-readonly record structs | `readonly`, `init`, `readonly record struct` | When safe |
 | [FP0004](docs/rules/FP0004.md) | Plain classes | Records for data, static classes for functions | When safe |
 | [FP0005](docs/rules/FP0005.md) | Creating `List<T>`, `Dictionary<,>`, `StringBuilder`, builders, streams and other mutable collections, including `ToList()`; locals typed `IList<T>` etc. | `System.Collections.Immutable` types | Locals |
 | [FP0006](docs/rules/FP0006.md) | Calling legacy code directly | Call it through an `[ImperativeAdapter]` | |
-| [FP0007](docs/rules/FP0007.md) | `throw` | Return an `Error` on your `Result<T>` | |
+| [FP0007](docs/rules/FP0007.md) | `throw`, `ThrowIf...` helpers, `ExceptionDispatchInfo.Throw` | Return an `Error` on your `Result<T>` | |
 | [FP0008](docs/rules/FP0008.md) | `IList<T>`, `ICollection<T>`, `IDictionary<,>`, `List<T>` etc. in signatures | `IReadOnlyList<T>`, `ImmutableArray<T>` | Yes |
 | [FP0009](docs/rules/FP0009.md) | Adapters with legacy types in their public signatures | Return functional types | |
 | [FP0010](docs/rules/FP0010.md) | `async void` | Return `Task` | Yes |
-| [FP0011](docs/rules/FP0011.md) | Clock, `Guid.NewGuid`, `Random`, `Console`, file I/O, `HttpClient`, current culture, parallel LINQ, hidden `Environment.NewLine` (indented JSON/XML, `ReplaceLineEndings()`) and similar | An adapter, or pass the value in | Line endings |
+| [FP0011](docs/rules/FP0011.md) | Clock, `Guid.NewGuid`, `Random`, `Console`, `Debug`, file I/O, `HttpClient` and other network APIs, reflection that reads or runs members, current culture, parallel LINQ, hidden `Environment.NewLine` (indented JSON/XML, `ReplaceLineEndings()`) and similar | An adapter, or pass the value in | Line endings |
 | [FP0012](docs/rules/FP0012.md) | Ignoring the result of `list.Add(x)`, LINQ, string, date or `Math` methods, or methods on your own records | Use the result: `var updated = list.Add(x)` | |
-| [FP0013](docs/rules/FP0013.md) | `_` arms and switch statements over enums, `closed` types and unions | A switch expression that lists every case | |
+| [FP0013](docs/rules/FP0013.md) | Catch-all arms (`_`, `var x`, `object`...), switch statements and switching on a cast, over enums, `closed` types and unions | A switch expression that lists every case | |
 | [FP0014](docs/rules/FP0014.md) | Collections that compare by reference (`ImmutableArray`, lists, arrays) inside records | `ValueList<T>` or another `[ValueEquality]` type | |
 | [FP0015](docs/rules/FP0015.md) | Calls that throw: `First`, `Single`, `Parse`, `dict[key]`, `ToDictionary`... | `FirstOrDefault`, list patterns, `TryParse`, `TryGetValue` | |
-| [FP0016](docs/rules/FP0016.md) | `#pragma warning disable`, `[SuppressMessage]`, `#nullable disable`; with a policy, also lowered rules, nullable off, files marked generated, a core that stopped loading FunctionalLint | Fix what the rule reports | |
+| [FP0016](docs/rules/FP0016.md) | `#pragma warning disable`, `[SuppressMessage]`, `#nullable disable`; with a policy, also lowered rules and compiler checks, nullable or analyzers off, code marked generated, a second policy file, a core that stopped loading FunctionalLint | Fix what the rule reports | |
 | [FP0017](docs/rules/FP0017.md) | With a policy: `[ImperativeAdapter]` outside the policy's adapter namespaces | Pass the value in, or move the adapter | |
 | [FP0018](docs/rules/FP0018.md) | With a policy: using a library beyond the .NET base library and the policy's list | Move that code to a shell project | |
 
@@ -56,7 +56,7 @@ public static string Describe(Payment p) => p switch
 };
 ```
 
-Add a `Voucher` case later and every switch that doesn't handle it stops compiling (CS8509, an error under the props file). FP0013 stops the two ways around that: a `_` arm, and a switch statement. A `union Pet(Cat, Dog)` works the same way when the cases already exist as separate types.
+Add a `Voucher` case later and every switch that doesn't handle it stops compiling (CS8509, an error under the props file). FP0013 stops the ways around that: a catch-all arm (`_`, `var x`, `object`...), a switch statement, and switching on a cast such as `(object)p`. A `union Pet(Cat, Dog)` works the same way when the cases already exist as separate types.
 
 ## Set up a core project
 
@@ -144,7 +144,7 @@ dotnet_diagnostic.FP0008.severity = warning
 
 ## Policy: the owner's rules
 
-An agent stuck on a rule will reach for whatever switches it off: a pragma, an `[ImperativeAdapter]`, a config setting, or deleting the `FunctionalCore.props` import. A policy file puts those decisions with the repository's owner. Put `functionallint.policy` at the repository root ([this repo's](../functionallint.policy) is an example):
+An agent stuck on a rule will reach for whatever switches it off: a pragma, an `[ImperativeAdapter]`, a config setting, or deleting the `FunctionalCore.props` import. A policy file puts those decisions with the repository's owner. Put `functionallint.policy` at the repository root ([this repo's](../functionallint.policy) is an example). Paths in it are relative to the repository root (the git top level), so another policy file further down can't change which projects are cores:
 
 ```ini
 is_global = true
@@ -159,9 +159,10 @@ functional_lint.gate_only =                           # cores only the gate chec
 ```
 
 It's a globalconfig, so `FunctionalCore.props` adds it to the build and the IDE shows the same results. The gate (`heal.sh --check`, the agent hook and CI) is what enforces it. The gate reads the policy itself, so its values win over any `.editorconfig`. Then for each core it reports (FP0016):
-- `#pragma warning disable`, `[SuppressMessage]` and `#nullable disable`, even where a pragma hides FP0016 from the build;
-- a rule lowered by `<NoWarn>` or config, and nullable checking turned off;
-- files marked as generated code (an `<auto-generated>` header or a `.g.cs` name), which every analyzer skips;
+- `#pragma warning disable`, `[SuppressMessage]` (by any name, including an alias) and `#nullable disable`, even where a pragma hides FP0016 from the build;
+- a rule lowered by `<NoWarn>` or config, and the same for CS8509, the nullable warnings and the culture rules; nullable checking turned off; `RunAnalyzers` or `RunAnalyzersDuringBuild` set to false;
+- code marked as generated, which every analyzer skips: an `<auto-generated>` header, a `.g.cs` name, `[GeneratedCode]` or `#line hidden`;
+- another `functionallint.policy` between a core and the repository root, which the build would use instead;
 - a listed core that no longer imports `FunctionalCore.props`. The gate still checks it with every rule.
 
 FP0017 and FP0018 are off without a policy.
@@ -171,7 +172,7 @@ FP0017 and FP0018 are off without a policy.
 The policy only helps if the agent can't edit it. There are three layers, from cheapest to strongest:
 
 1. **Claude Code permissions.** [`agents/claude-settings.json`](agents/claude-settings.json) denies edits to project and build files, `.editorconfig`, `*.globalconfig` and the policy. Claude then has to ask you. It's merged with the hook below. Verified in a live session: the edits were refused, and edits to `.cs` files still worked. A shell command could still change a file, which is what the other two layers are for.
-2. **CI checks pull requests against main's policy.** The workflow copies `functionallint.policy` from the base branch and points `FUNCTIONALLINT_POLICY` at it. A pull request that loosens the policy is checked against the old one, and gets a warning saying so.
+2. **CI checks pull requests against main's policy.** The workflow copies `functionallint.policy` from the base branch and points `FUNCTIONALLINT_POLICY` at it. A pull request that loosens the policy is checked against the old one, and gets a warning saying so. If `FUNCTIONALLINT_POLICY` names a file that doesn't exist, heal stops with exit 2 rather than check without it.
 3. **For teams: code owners.** Add the policy and build files to `.github/CODEOWNERS`, and require code-owner review in branch protection. (On a repository with one maintainer, this would block your own pull requests.)
 
 ## Fix and learn: the agent loop
@@ -196,7 +197,7 @@ Orders.cs(20,9): error FP0001: 'foreach' loops are not allowed. Use LINQ, Aggreg
 - Given a solution, it only touches projects that import `FunctionalCore.props` (or the package).
 - Given a project, it also loads the nearest solution that lists it, so it can see the projects that depend on it. A fix that would break one of them (say, a setter a host project uses) is left for you, and isn't marked `[auto-fixable]`. Without such a solution, the report says dependents weren't checked.
 
-Auto-fixes only make changes that keep the code's meaning. Where that isn't possible (loops, mutation, throws, side effects) the message says what to write instead. If a fix makes other code stop compiling, that code was mutating something it shouldn't, and the compiler now points at it.
+Auto-fixes only make changes that keep the code's meaning. Where that isn't possible (loops, mutation, throws, side effects) the message says what to write instead. A fix is also skipped where it would change meaning in that one place: a class whose instances are compared anywhere in the solution doesn't become a record (records compare by value), and a field of a mutable struct type doesn't become `readonly` (calls on it would run on a copy). Those are left for you and aren't marked `[auto-fixable]`. If a fix makes other code stop compiling, that code was mutating something it shouldn't, and the compiler now points at it.
 
 To fix things one at a time in the IDE, use the light bulb on the error.
 
@@ -225,7 +226,7 @@ Two pieces help a coding agent work in the functional subset.
 
 **Speed.** The first check loads the project, which takes about 4 seconds. It also starts a check server in the background, which keeps the project loaded and re-reads only the files that changed. After that a check takes about half a second. Adding or removing a file, or changing a project file, makes the server reload that project (about 2 seconds). The server stops after 30 idle minutes, or when FunctionalLint is rebuilt.
 
-- `heal.sh --serve` starts the server yourself; `heal.sh <project> --check` uses it whenever it's running.
+- `heal.sh --serve` starts the server yourself; `heal.sh <project> --check` uses it whenever it's running. A server only answers checks run with the same `FUNCTIONALLINT_POLICY` it was started with.
 - It also reloads when an `.editorconfig`, `.globalconfig` or `Directory.Build.*` file changes, and stops cleanly on SIGTERM.
 - Its socket is in a folder only you can open (`$XDG_RUNTIME_DIR/functionallint` or `~/.cache/functionallint`).
 - `FUNCTIONALLINT_NO_SERVER=1` turns it off (for example on CI).
@@ -259,8 +260,8 @@ In test sources, `{|FP0001:text|}` means "expect FP0001 on exactly this text". A
 
 ## Its own rules
 
-FunctionalLint is checked by itself. The analyzer and code fixes are gate-only cores in [`functionallint.policy`](../functionallint.policy) (they can't load themselves at build time), and CI gates them with `heal.sh FunctionalLint/FunctionalLint.slnx --check`.
-- **The imperative part is in one file.** [`Adapters.cs`](src/FunctionalLint/Adapters.cs) holds the caches that parallel callbacks share (`Memo`), reporting each diagnostic (`Effects.ReportAll`), and `Sequences.Unfold` (walking up an operation's parents). Everything else follows the rules.
+FunctionalLint is checked by itself. The analyzer and code fixes are gate-only cores in [`functionallint.policy`](../functionallint.policy) (they can't load themselves at build time), and CI gates them with `heal.sh FunctionalLint/FunctionalLint.slnx --check`. They import `build/FunctionalCore.Settings.props`, so their builds make warnings, nullable warnings and CS8509 errors like any core's.
+- **The imperative part is in one file.** [`Adapters.cs`](src/FunctionalLint/Adapters.cs) holds the caches that parallel callbacks share (`Memo`), reporting each diagnostic (`Effects.ReportAll`), `Sequences.Unfold` (walking up an operation's parents or base types), and `NewerRoslyn.IsClosed` (a Roslyn property read by reflection). Everything else follows the rules.
 - **`heal.sh` fixed its own analyzer first** (five signatures). The rest was rewritten by hand: loops became LINQ or recursion, lookup tables became `switch` expressions, and mutable sets became immutable ones.
 - **Dogfooding found four gaps in the lint**, all fixed:
   - FP0004 flagged classes a library requires (an analyzer, a JSON converter).
@@ -271,7 +272,7 @@ FunctionalLint is checked by itself. The analyzer and code fixes are gate-only c
 
 ## What it can't catch
 
-- **Mutating methods on library types.** `Array.Sort`, `Array.Fill` and similar are caught (FP0002), but a method that changes a mutable object from a library isn't. FP0005 and FP0008 keep most mutable collections out in the first place.
+- **Mutating methods on library types.** `Array.Sort`, `Array.Fill`, `CopyTo` into an existing array and similar are caught (FP0002), but a method that changes a mutable object from a library isn't. FP0005 and FP0008 keep most mutable collections out in the first place.
 - **Mutable objects in readonly fields**, such as a `static readonly JsonSerializerOptions`. `readonly` protects only the reference.
 - **Every way to throw.** FP0015 covers the common calls; indexers on arrays and lists, overflow and casts aren't covered. Random-input tests find the rest: see [FP0015](docs/rules/FP0015.md#what-it-doesnt-cover).
 - **Mutation inside libraries you call.**

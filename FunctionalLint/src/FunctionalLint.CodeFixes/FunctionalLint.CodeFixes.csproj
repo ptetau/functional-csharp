@@ -10,6 +10,10 @@
     <IsPackable>false</IsPackable>
   </PropertyGroup>
 
+  <!-- A functional core the gate checks (functionallint.policy lists it as gate-only): it can't load FunctionalLint
+       itself, but takes the compiler settings every core has, so warnings, nullable and CS8509 are errors. -->
+  <Import Project="..\..\build\FunctionalCore.Settings.props" />
+
   <ItemGroup>
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" Version="4.12.0" PrivateAssets="all" />
   </ItemGroup>

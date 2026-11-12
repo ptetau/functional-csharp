@@ -179,3 +179,60 @@ public class FP0015_MoreSafeCalls
         }
         """);
 }
+
+public class FP0015_UniqueKeysNeedTheRightKey
+{
+    [Fact]
+    public Task A_new_key_after_Distinct_or_GroupBy_can_still_collide() => Verify("""
+        using System;
+        using System.Collections.Immutable;
+        using System.Linq;
+
+        public sealed record Row(string Sku, decimal Price);
+
+        public static class C
+        {
+            public static object A(ImmutableArray<string> xs) => {|FP0015:xs.Distinct().ToImmutableDictionary(s => s.Length)|};
+            public static object B(ImmutableArray<string> xs) => {|FP0015:xs.GroupBy(s => s).ToImmutableDictionary(g => g.Count(), g => g.Key)|};
+            public static object D(ImmutableArray<string> xs) => {|FP0015:xs.Distinct().ToImmutableDictionary(s => s.ToUpperInvariant())|};
+            public static object E(ImmutableArray<Row> rows) => {|FP0015:rows.DistinctBy(r => r.Sku).ToImmutableDictionary(r => r.Price)|};
+            public static object F(ImmutableArray<string> xs) =>
+                {|FP0015:xs.Distinct().ToImmutableDictionary(s => s, StringComparer.OrdinalIgnoreCase)|};
+            public static object G(ImmutableArray<string> xs) =>
+                {|FP0015:xs.GroupBy(s => s, StringComparer.Ordinal).ToImmutableDictionary(g => g.Key, g => g.Count(), StringComparer.OrdinalIgnoreCase)|};
+            public static object H(ImmutableArray<string> xs)
+            {
+                var groups = xs.GroupBy(s => s.Length).ToImmutableArray();
+                return {|FP0015:groups.ToImmutableDictionary(g => g.First(), g => g.Key)|};
+            }
+            public static object I(ImmutableArray<Row> rows) =>
+                {|FP0015:rows.GroupBy(r => r.Sku, (sku, items) => new { Key = items.Count() }).ToImmutableDictionary(x => x.Key)|};
+        }
+        """);
+
+    [Fact]
+    public Task The_key_the_items_were_made_unique_by_is_allowed() => Verify("""
+        using System;
+        using System.Collections.Generic;
+        using System.Collections.Immutable;
+        using System.Linq;
+
+        public sealed record Row(string Sku, decimal Price);
+        public sealed record Site(string Method, string Sites);
+
+        public static class C
+        {
+            public static object A(ImmutableArray<string> xs) => xs.Distinct().ToImmutableDictionary(s => s, s => s.Length);
+            public static object B(ImmutableArray<Row> rows) => rows.DistinctBy(r => r.Sku).ToImmutableDictionary(row => row.Sku, row => row.Price);
+            public static object D(ImmutableArray<Row> rows) => rows.DistinctBy(r => r.Sku).ToImmutableDictionary(r => r);
+            public static object E(ImmutableArray<Row> rows) => rows.GroupBy(r => r.Sku).ToImmutableDictionary(g => g.Key, g => g.First().Price);
+            public static object F(ImmutableArray<Row> rows) => rows.ToLookup(r => r.Sku).ToImmutableDictionary(g => g.Key, g => g.Count());
+            public static object G(ImmutableArray<Site> sites, IEqualityComparer<string> comparer) =>
+                sites.GroupBy(x => x.Method, comparer).ToImmutableDictionary(g => g.Key, g => g.First().Sites, comparer);
+            public static object H(ImmutableArray<string> xs) =>
+                xs.Distinct(StringComparer.OrdinalIgnoreCase).ToImmutableDictionary(s => s, StringComparer.OrdinalIgnoreCase);
+            public static object I(ImmutableArray<Row> rows) =>
+                rows.GroupBy(r => r.Sku, r => r.Price).Where(g => g.Count() > 1).ToImmutableDictionary(g => g.Key, g => g.Sum());
+        }
+        """);
+}

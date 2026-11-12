@@ -3,7 +3,6 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
-using System.Reflection;
 using System.Threading;
 using FunctionalLint.Adapters;
 using Microsoft.CodeAnalysis;
@@ -143,9 +142,10 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         "Checks must stay on",
         "'{0}' {1}. {2}",
         "A functional core can't turn checks off: no '#pragma warning disable', [SuppressMessage] or '#nullable disable'. " +
-        "The gate (heal.sh --check, the agent hook, CI) also reports what a file can't show: a rule lowered by NoWarn or " +
-        "config, nullable checking turned off, a file marked as generated code, or a policy core that no longer loads " +
-        "FunctionalLint. functional_lint.may_lower lists the exceptions the project owner allows.");
+        "The gate (heal.sh --check, the agent hook, CI) also reports what the build can't: a rule lowered by NoWarn or " +
+        "config, nullable checking or analyzers turned off, code marked as generated ([GeneratedCode], '#line hidden', " +
+        "a generated file), a second policy file, or a policy core that no longer loads FunctionalLint. " +
+        "functional_lint.may_lower lists the exceptions the project owner allows.");
 
     public static readonly DiagnosticDescriptor AdapterPlacement = Rule("FP0017",
         "Adapters only where the policy allows them",
@@ -248,6 +248,10 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         "System.Globalization.CultureInfo.CurrentCulture", "System.Globalization.CultureInfo.CurrentUICulture",
         "System.TimeZoneInfo.Local", "System.IO.Path.GetFullPath", "System.IO.Path.GetTempPath",
         "System.Linq.ParallelEnumerable", "System.Threading.Tasks.Parallel",
+        "System.Diagnostics.Debug", "System.Diagnostics.Trace",
+        "System.Net.Dns", "System.Net.Sockets.Socket", "System.Net.Sockets.TcpClient", "System.Net.Sockets.TcpListener",
+        "System.Net.Sockets.UdpClient", "System.Net.WebRequest", "System.Net.WebClient", "System.Net.HttpListener",
+        "System.Net.Mail.SmtpClient", "System.Net.NetworkInformation.Ping", "System.Net.NetworkInformation.NetworkInterface",
     };
 
     // Not side effects as such, but still hidden inputs: the answer depends on where or how the code runs.
@@ -255,6 +259,19 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
     {
         "System.Environment", "System.Globalization.CultureInfo.CurrentCulture", "System.Globalization.CultureInfo.CurrentUICulture",
         "System.TimeZoneInfo.Local", "System.IO.Path.GetFullPath", "System.IO.Path.GetTempPath",
+        "System.Net.Dns.GetHostName", "System.Net.NetworkInformation.NetworkInterface",
+    };
+
+    // Reflection that reads or runs a member picked at run time, so the compiler can't see what it reaches:
+    // `typeof(DateTime).GetProperty("Now")!.GetValue(null)` is the clock. Looking members up (GetProperty, GetMethods)
+    // is fine; using them is reported.
+    private static readonly string[] ReflectionApis =
+    {
+        "System.Activator", "System.Reflection.MethodBase.Invoke", "System.Reflection.ConstructorInfo.Invoke",
+        "System.Reflection.MethodInvoker", "System.Reflection.ConstructorInvoker",
+        "System.Reflection.PropertyInfo.GetValue", "System.Reflection.PropertyInfo.SetValue",
+        "System.Reflection.FieldInfo.GetValue", "System.Reflection.FieldInfo.SetValue",
+        "System.Reflection.MethodInfo.CreateDelegate", "System.Type.InvokeMember", "System.Delegate.DynamicInvoke",
     };
 
     private static readonly string[] NondeterministicApis = { "System.Linq.ParallelEnumerable", "System.Threading.Tasks.Parallel" };
@@ -280,10 +297,11 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         context.RegisterSymbolAction(AnalyzeAdapterSignature, SymbolKind.Method, SymbolKind.Property, SymbolKind.Field);
         // Policy rules: about adapters and the project itself, so not guarded either.
         context.RegisterSyntaxNodeAction(AnalyzeAdapterPlacement, SyntaxKind.Attribute);
-        context.RegisterSyntaxTreeAction(ctx =>
+        context.RegisterSemanticModelAction(ctx =>
         {
-            var mayLower = PolicyList(ctx.Options.AnalyzerConfigOptionsProvider.GetOptions(ctx.Tree), MayLowerKey) ?? ImmutableArray<string>.Empty;
-            Effects.ReportAll(SwitchOffs(ctx.Tree, mayLower, ctx.CancellationToken), ctx.ReportDiagnostic);
+            var tree = ctx.SemanticModel.SyntaxTree;
+            var mayLower = PolicyList(ctx.Options.AnalyzerConfigOptionsProvider.GetOptions(tree), MayLowerKey) ?? ImmutableArray<string>.Empty;
+            Effects.ReportAll(SwitchOffs(tree, ctx.SemanticModel, mayLower, ctx.CancellationToken), ctx.ReportDiagnostic);
         });
 
         context.RegisterCompilationStartAction(start =>
@@ -300,7 +318,8 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
             if (PolicyList(start.Options.AnalyzerConfigOptionsProvider.GlobalOptions, AllowedReferencesKey) is { } allowedReferences)
             {
                 var outside = Memo.OfSymbols<IAssemblySymbol, bool>();
-                start.RegisterOperationAction(GuardOp(ctx => AnalyzeReference(ctx, allowedReferences, outside)), ReferenceKinds);
+                var coreFolder = BaseLibraryFolder(start.Compilation);
+                start.RegisterOperationAction(GuardOp(ctx => AnalyzeReference(ctx, allowedReferences, coreFolder, outside)), ReferenceKinds);
             }
             start.RegisterOperationAction(GuardOp(AnalyzeIndentedWriter), OperationKind.ObjectCreation);
             start.RegisterOperationAction(GuardOp(AnalyzeReplaceLineEndings), OperationKind.Invocation);
@@ -320,6 +339,7 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
             start.RegisterOperationAction(GuardOp(AnalyzeEventAssignment), OperationKind.EventAssignment);
             start.RegisterOperationAction(GuardOp(AnalyzeBoundary), ReferenceKinds);
             start.RegisterOperationAction(GuardOp(AnalyzeThrow), OperationKind.Throw);
+            start.RegisterOperationAction(GuardOp(AnalyzeThrowHelper), OperationKind.Invocation);
             start.RegisterOperationAction(GuardOp(AnalyzeIgnoredResult), OperationKind.ExpressionStatement);
             start.RegisterOperationAction(GuardOp(AnalyzeSwitchExpression), OperationKind.SwitchExpression);
             start.RegisterOperationAction(GuardOp(AnalyzeSwitchStatement), OperationKind.Switch);
@@ -461,8 +481,9 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
     private static readonly string[] MutatingApis =
     {
         "System.Array.Fill", "System.Array.Clear", "System.Array.Sort", "System.Array.Reverse", "System.Array.Copy",
-        "System.Array.Resize", "System.Array.ConstrainedCopy",
-        "System.Span<T>.Fill", "System.Span<T>.Clear", "System.Span<T>.CopyTo", "System.Span<T>.TryCopyTo",
+        "System.Array.Resize", "System.Array.ConstrainedCopy", "System.Array.SetValue", "System.Array.Initialize",
+        "System.Buffer.BlockCopy", "System.Buffer.SetByte", "System.Buffer.MemoryCopy",
+        "System.Span<T>.Fill", "System.Span<T>.Clear",
         "System.MemoryExtensions.Sort", "System.MemoryExtensions.Reverse",
         "System.Runtime.InteropServices.ImmutableCollectionsMarshal.AsImmutableArray",
     };
@@ -471,13 +492,23 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
     {
         var method = ((IInvocationOperation)ctx.Operation).TargetMethod;
         var key = method.ContainingType.OriginalDefinition.ToDisplayString() + "." + method.Name;
-        if (!MutatingApis.Contains(key)) return;
+        if (!MutatingApis.Contains(key) && !CopiesIntoBuffer(method)) return;
 
         var (what, remedy) = method.ContainingType.Name == "ImmutableCollectionsMarshal"
             ? ($"'{method.Name}' makes an 'immutable' array that its owner can still change.", "Use ToImmutableArray() instead.")
-            : ($"'{method.ContainingType.Name}.{method.Name}' changes its argument in place.", "Build a new value with LINQ instead.");
+            : method is { IsStatic: false, Name: "SetValue" or "Initialize" }
+                ? ($"'{method.ContainingType.Name}.{method.Name}' changes the array it's called on.", "Build a new array with Select(...).ToArray() instead.")
+                : ($"'{method.ContainingType.Name}.{method.Name}' changes its argument in place.", "Build a new value with LINQ instead.");
         Report(ctx, NoMutation, ctx.Operation.Syntax, what, remedy);
     }
+
+    // `source.CopyTo(destination, 0)` writes into an array, span or memory that already exists: arrays, lists,
+    // immutable collections, strings and spans all have one. (A stream's CopyTo is I/O, which FP0011 covers.)
+    private static bool CopiesIntoBuffer(IMethodSymbol method) =>
+        method.Name is "CopyTo" or "TryCopyTo"
+        && !method.Locations.Any(l => l.IsInSource)
+        && method.Parameters.Any(p => p.Type is IArrayTypeSymbol
+            || p.Type.OriginalDefinition.ToDisplayString() is "System.Array" or "System.Span<T>" or "System.Memory<T>");
 
     private static bool IsFreshBinding(IOperation target) => target switch
     {
@@ -655,6 +686,20 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         ctx.ReportDiagnostic(Diagnostic.Create(NoThrow, keyword.GetLocation()));
     }
 
+    // Library calls that exist to throw: the `ThrowIf...` helpers on exception types (`ArgumentNullException.ThrowIfNull`,
+    // `ArgumentOutOfRangeException.ThrowIfNegative`, `ObjectDisposedException.ThrowIf`...) and `ExceptionDispatchInfo.Throw`.
+    private static void AnalyzeThrowHelper(OperationAnalysisContext ctx)
+    {
+        var method = ((IInvocationOperation)ctx.Operation).TargetMethod;
+        if (method.Locations.Any(l => l.IsInSource)) return;
+
+        var throws = method.Name.StartsWith("ThrowIf", StringComparison.Ordinal) && method.IsStatic
+                && InheritsFrom(method.ContainingType, "System.Exception")
+            || method.Name == "Throw"
+                && method.ContainingType.ToDisplayString() == "System.Runtime.ExceptionServices.ExceptionDispatchInfo";
+        if (throws) Report(ctx, NoThrow, ctx.Operation.Syntax);
+    }
+
     // FP0008 Mutable types in signatures --------------------------------------
 
     private static void AnalyzeSignature(SymbolAnalysisContext ctx, IReadOnlyDictionary<ISymbol, string> banned)
@@ -725,23 +770,13 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
     private static void AnalyzeSwitchExpression(OperationAnalysisContext ctx)
     {
         var op = (ISwitchExpressionOperation)ctx.Operation;
+        if (ReportWidened(ctx, op.Value)) return;
         if (op.Value.Type is not { } type || CheckedKind(type) is null) return;
 
-        // An unguarded arm that matches anything left: `_`, `var x`, the input's own type, `{ }` or `not null`.
-        var underlying = Unwrapped(type);
-        bool IsInput(ITypeSymbol? matched) =>
-            SymbolEqualityComparer.Default.Equals(matched, type) || SymbolEqualityComparer.Default.Equals(matched, underlying);
-        var catchAll = op.Arms.FirstOrDefault(arm => arm.Guard is null && arm.Pattern switch
-        {
-            IDiscardPatternOperation => true,
-            IDeclarationPatternOperation { MatchesNull: true } => true,
-            IDeclarationPatternOperation declaration => IsInput(declaration.MatchedType),
-            ITypePatternOperation typePattern => IsInput(typePattern.MatchedType),
-            IRecursivePatternOperation { DeconstructionSubpatterns.IsEmpty: true, PropertySubpatterns.IsEmpty: true } recursive =>
-                recursive.MatchedType is null || IsInput(recursive.MatchedType),
-            INegatedPatternOperation { Pattern: IConstantPatternOperation { Value.ConstantValue: { HasValue: true, Value: null } } } => true,
-            _ => false,
-        });
+        // An arm that matches anything left: `_`, `var x`, `{ }`, `not null`, or a type every case has (the input's
+        // own type, a base type or interface of it, `object`, `Enum`), unguarded or with a guard that's always true.
+        var catchAll = op.Arms.FirstOrDefault(arm =>
+            (arm.Guard is null || arm.Guard.ConstantValue is { HasValue: true, Value: true }) && MatchesEverything(arm.Pattern, type));
         if (catchAll is null) return;
 
         Report(ctx, ExhaustiveSwitch, catchAll.Pattern.Syntax,
@@ -749,9 +784,62 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
             "List each case instead.");
     }
 
+    private static bool MatchesEverything(IPatternOperation pattern, ITypeSymbol input) => pattern switch
+    {
+        IDiscardPatternOperation => true,
+        IDeclarationPatternOperation { MatchesNull: true } => true,
+        IDeclarationPatternOperation declaration => CoversEveryCase(declaration.MatchedType, input),
+        ITypePatternOperation typePattern => CoversEveryCase(typePattern.MatchedType, input),
+        IRecursivePatternOperation { DeconstructionSubpatterns.IsEmpty: true, PropertySubpatterns.IsEmpty: true } recursive =>
+            recursive.MatchedType is null || CoversEveryCase(recursive.MatchedType, input),
+        INegatedPatternOperation { Pattern: IConstantPatternOperation { Value.ConstantValue: { HasValue: true, Value: null } } } => true,
+        IBinaryPatternOperation { OperatorKind: BinaryOperatorKind.Or } or =>
+            MatchesEverything(or.LeftPattern, input) || MatchesEverything(or.RightPattern, input),
+        _ => false,
+    };
+
+    // A type that every value of the input has: the input itself, one of its base types or interfaces (`object` and
+    // `Enum` included), or for a union, a type every case type has.
+    private static bool CoversEveryCase(ITypeSymbol? matched, ITypeSymbol input)
+    {
+        if (matched is null) return false;
+        var underlying = Unwrapped(input);
+        static bool Has(ITypeSymbol type, ITypeSymbol matched) =>
+            SymbolEqualityComparer.Default.Equals(type, matched)
+            || matched.SpecialType == SpecialType.System_Object
+            || BaseTypes(type).Concat(type.AllInterfaces).Any(t => SymbolEqualityComparer.Default.Equals(t, matched));
+
+        if (SymbolEqualityComparer.Default.Equals(matched, input) || Has(underlying, matched)) return true;
+        var cases = UnionCases(underlying);
+        return !cases.IsEmpty && cases.All(c => Has(c, matched));
+    }
+
+    private static IEnumerable<INamedTypeSymbol> BaseTypes(ITypeSymbol type) => Sequences.Unfold(type.BaseType, t => t.BaseType);
+
+    // A union's case types: the types its one-parameter constructors take (`union Pet(Cat, Dog)` has Pet(Cat) and Pet(Dog)).
+    private static ImmutableArray<ITypeSymbol> UnionCases(ITypeSymbol type) =>
+        CheckedKind(type) == "union" && type is INamedTypeSymbol named
+            ? named.InstanceConstructors.Where(c => c.Parameters.Length == 1).Select(c => c.Parameters[0].Type).ToImmutableArray()
+            : ImmutableArray<ITypeSymbol>.Empty;
+
+    // `(object)shape switch { ... }` and `(int)colour switch { ... }` switch on a type the compiler can't check, so
+    // a catch-all is needed and a new case won't be an error.
+    private static bool ReportWidened(OperationAnalysisContext ctx, IOperation value)
+    {
+        if (value is not IConversionOperation { IsImplicit: false } conversion
+            || conversion.Operand.Type is not { } from || CheckedKind(from) is not { } kind
+            || conversion.Type is not { } to || CheckedKind(to) is not null) return false;
+
+        Report(ctx, ExhaustiveSwitch, conversion.Syntax,
+            $"'{conversion.Syntax}' turns the {kind} '{Display(from)}' into '{Display(to)}', so a new case won't be an error.",
+            $"Use a switch on '{conversion.Operand.Syntax}' that lists each case instead.");
+        return true;
+    }
+
     private static void AnalyzeSwitchStatement(OperationAnalysisContext ctx)
     {
         var op = (ISwitchOperation)ctx.Operation;
+        if (ReportWidened(ctx, op.Value)) return;
         if (op.Value.Type is not { } type || CheckedKind(type) is not { } kind) return;
 
         var keyword = op.Syntax.GetFirstToken();
@@ -775,25 +863,13 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
 
     // C# 15 `closed` types. In source the modifier is visible in the syntax. For compiled types only the compiler
     // knows, through ITypeSymbol.IsClosed, which is still marked experimental. This analyzer is built against an
-    // older Roslyn, so it reads that property by reflection and quietly does without it if it ever goes away.
-    private static readonly PropertyInfo? IsClosedProperty =
-        typeof(ITypeSymbol).GetRuntimeProperties().FirstOrDefault(p => p.Name == "IsClosed" && p.PropertyType == typeof(bool));
-
+    // older Roslyn, so an adapter reads that property by reflection (NewerRoslyn.IsClosed).
     private static bool IsClosed(ITypeSymbol type)
     {
         var definition = type.OriginalDefinition;
-        if (definition.DeclaringSyntaxReferences.Any(r =>
-                r.GetSyntax() is TypeDeclarationSyntax declaration && declaration.Modifiers.Any(m => m.Text == "closed")))
-            return true;
-
-        try
-        {
-            return IsClosedProperty?.GetValue(definition) is true;
-        }
-        catch (TargetInvocationException)
-        {
-            return false;
-        }
+        return definition.DeclaringSyntaxReferences.Any(r =>
+                r.GetSyntax() is TypeDeclarationSyntax declaration && declaration.Modifiers.Any(m => m.Text == "closed"))
+            || NewerRoslyn.IsClosed(definition);
     }
 
     // FP0014 Collections in records ---------------------------------------------
@@ -967,12 +1043,67 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
 
     // `xs.GroupBy(k).ToDictionary(g => g.Key, ...)` can't have duplicate keys, and `xs.DefaultIfEmpty(0).Max()`
     // can't be empty: FP0015's own advice has been followed.
-    // Keys are unique when the source is groups or distinct items, seen through steps that keep items unique
-    // (filtering, ordering, copying into an array or list) and through a local set to such a sequence:
+    // Keys are unique when the items are groups keyed by `g => g.Key`, or distinct items keyed by themselves (or, after
+    // DistinctBy, by the same selector). The items are followed through steps that keep them unique (filtering,
+    // ordering, copying into an array or list) and through a local set to such a sequence:
     // `var bySku = rows.GroupBy(r => r.Sku).ToImmutableArray(); ... bySku.ToDictionary(g => g.Key, ...)`.
-    private static bool HasUniqueKeys(IInvocationOperation op) =>
-        Origin(op.Instance ?? op.Arguments.FirstOrDefault()?.Value) is IInvocationOperation call
-        && call.TargetMethod.Name is "GroupBy" or "Distinct" or "DistinctBy" or "ToLookup";
+    // A key comparer on the dictionary has to be the one the items were made unique with, written the same way.
+    private static bool HasUniqueKeys(IInvocationOperation op)
+    {
+        if (Origin(op.Instance ?? op.Arguments.FirstOrDefault()?.Value) is not IInvocationOperation call) return false;
+        if (Lambda(ArgumentFor(op, "keySelector")) is not { } key) return false;
+
+        var comparer = ArgumentFor(op, "keyComparer") ?? ArgumentFor(op, "comparer");
+        if (comparer is not null && ArgumentFor(call, "comparer")?.Syntax.ToString() != comparer.Syntax.ToString()) return false;
+
+        return call.TargetMethod.Name switch
+        {
+            "Distinct" => IsIdentity(key),
+            "DistinctBy" => IsIdentity(key) || Lambda(ArgumentFor(call, "keySelector")) is { } distinctBy && SameSelector(key, distinctBy),
+            "GroupBy" or "ToLookup" => IsGroupKey(key),
+            _ => false,
+        };
+    }
+
+    // The argument passed for a parameter, or null if it was left out or is null.
+    private static IOperation? ArgumentFor(IInvocationOperation op, string parameter) =>
+        op.Arguments.FirstOrDefault(a => a.Parameter?.Name == parameter && a.ArgumentKind != ArgumentKind.DefaultValue)?.Value
+            is { ConstantValue: not { HasValue: true, Value: null } } value ? value : null;
+
+    // The lambda an argument passes, through conversions and delegate creation.
+    private static IAnonymousFunctionOperation? Lambda(IOperation? argument) =>
+        Sequences.Unfold(argument, a => a switch
+        {
+            IConversionOperation c => c.Operand,
+            IDelegateCreationOperation d => d.Target,
+            _ => null,
+        }).LastOrDefault() as IAnonymousFunctionOperation;
+
+    // What a one-line lambda returns: `x => x.Sku` gives `x.Sku`.
+    private static IOperation? Returned(IAnonymousFunctionOperation lambda) =>
+        Sequences.Unfold(
+            lambda.Body.Operations.Length == 1 && lambda.Body.Operations[0] is IReturnOperation { ReturnedValue: { } returned } ? returned : null,
+            v => v is IConversionOperation { IsImplicit: true, Conversion.IsIdentity: true } c ? c.Operand : null).LastOrDefault();
+
+    // `x => x`
+    private static bool IsIdentity(IAnonymousFunctionOperation lambda) =>
+        Returned(lambda) is IParameterReferenceOperation p && SymbolEqualityComparer.Default.Equals(p.Parameter, lambda.Symbol.Parameters.FirstOrDefault());
+
+    // `g => g.Key` on a group from GroupBy or ToLookup.
+    private static bool IsGroupKey(IAnonymousFunctionOperation lambda) =>
+        Returned(lambda) is IPropertyReferenceOperation { Property.Name: "Key", Instance: IParameterReferenceOperation p }
+        && SymbolEqualityComparer.Default.Equals(p.Parameter, lambda.Symbol.Parameters.FirstOrDefault())
+        && p.Type is { } type && type.AllInterfaces.Concat(type is INamedTypeSymbol n ? [n] : [])
+            .Any(i => i.OriginalDefinition.ToDisplayString() == "System.Linq.IGrouping<TKey, TElement>");
+
+    // `s => s.Sku` and `row => row.Sku`: the same expression, whatever the parameter is called.
+    private static bool SameSelector(IAnonymousFunctionOperation a, IAnonymousFunctionOperation b)
+    {
+        if (Returned(a)?.Syntax is not { } x || Returned(b)?.Syntax is not { } y) return false;
+        var (pa, pb) = (a.Symbol.Parameters.FirstOrDefault()?.Name, b.Symbol.Parameters.FirstOrDefault()?.Name);
+        var (ta, tb) = (x.DescendantTokens().ToImmutableArray(), y.DescendantTokens().ToImmutableArray());
+        return ta.Length == tb.Length && ta.Zip(tb, (s, t) => s.Text == t.Text || s.Text == pa && t.Text == pb).All(same => same);
+    }
 
     private static readonly ImmutableHashSet<string> KeepsItemsUnique = ImmutableHashSet.Create(StringComparer.Ordinal,
         "Where", "OrderBy", "OrderByDescending", "ThenBy", "ThenByDescending", "Order", "OrderDescending", "Reverse",
@@ -1115,6 +1246,7 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         bool In(string[] list) => list.Contains(typeName) || list.Contains(typeName + "." + member.Name);
         var why = In(AmbientApis) ? "depends on the machine it runs on"
             : In(NondeterministicApis) ? "runs work in an unpredictable order"
+            : In(ReflectionApis) ? "reaches members chosen at run time"
             : "has side effects";
         Report(ctx, ImpureApi, ctx.Operation.Syntax, isWholeType ? type.Name : $"{type.Name}.{member.Name}", why, ImpureRemedy);
     }
@@ -1176,7 +1308,7 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
     {
         public static ImpureApis Create(Compilation compilation, string extra)
         {
-            var entries = DefaultImpureApis.Concat(SplitList(extra)).ToImmutableArray();
+            var entries = DefaultImpureApis.Concat(ReflectionApis).Concat(SplitList(extra)).ToImmutableArray();
             var types = entries.Select(compilation.GetTypeByMetadataName).OfType<INamedTypeSymbol>();
             var members = entries
                 .Where(entry => compilation.GetTypeByMetadataName(entry) is null)
@@ -1200,11 +1332,27 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
 
     private const string RemoveIt = "Remove it and fix the code it hides.";
 
+    // Attributes that switch checks off, by full name. Roslyn matches them by symbol, so an alias
+    // (using Quiet = ...SuppressMessageAttribute) works as well as the plain name.
+    private static readonly string[] SuppressionAttributes =
+    {
+        "System.Diagnostics.CodeAnalysis.SuppressMessageAttribute",
+        "System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessageAttribute",
+    };
+
+    // Code marked with this is generated code to Roslyn, so analyzers skip it.
+    private const string GeneratedCodeAttribute = "System.CodeDom.Compiler.GeneratedCodeAttribute";
+
     /// <summary>
     /// What turns checks off inside a file: '#pragma warning disable', [SuppressMessage] and '#nullable disable'.
-    /// Public so the gate can run the same scan where a pragma can't hide FP0016 itself.
+    /// Public so the gate can run the same scan where a pragma can't hide FP0016 itself. With a semantic model,
+    /// attributes are matched by what they bind to, so an alias can't hide them.
     /// </summary>
-    public static IEnumerable<Diagnostic> SwitchOffs(SyntaxTree tree, ImmutableArray<string> mayLower, CancellationToken ct)
+    public static IEnumerable<Diagnostic> SwitchOffs(SyntaxTree tree, ImmutableArray<string> mayLower, CancellationToken ct) =>
+        SwitchOffs(tree, null, mayLower, ct);
+
+    /// <inheritdoc cref="SwitchOffs(SyntaxTree, ImmutableArray{string}, CancellationToken)"/>
+    public static IEnumerable<Diagnostic> SwitchOffs(SyntaxTree tree, SemanticModel? model, ImmutableArray<string> mayLower, CancellationToken ct)
     {
         bool Allowed(string id) => mayLower.Contains(id, StringComparer.OrdinalIgnoreCase);
         var root = tree.GetRoot(ct);
@@ -1221,18 +1369,13 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
             _ => null,
         }).OfType<Diagnostic>();
 
+        var aliases = Aliases(root);
         var suppressions = root.DescendantNodes().OfType<AttributeSyntax>()
-            .Where(attribute => IsSuppression(attribute) && !Allowed(SuppressedRule(attribute)))
+            .Where(attribute => AttributeKind(attribute, model, aliases, ct) == SwitchOffAttribute.Suppression
+                && !Allowed(SuppressedRule(attribute)))
             .Select(attribute => Diagnostic.Create(RuleSwitchedOff, attribute.GetLocation(), Short($"[{attribute}]"), "turns checks off", RemoveIt));
 
         return directives.Concat(suppressions);
-    }
-
-    private static bool IsSuppression(AttributeSyntax attribute)
-    {
-        var name = attribute.Name.ToString();
-        return name.Substring(name.LastIndexOf('.') + 1)
-            is "SuppressMessage" or "SuppressMessageAttribute" or "UnconditionalSuppressMessage" or "UnconditionalSuppressMessageAttribute";
     }
 
     // [SuppressMessage("Category", "FP0001:Title")]: the rule ID is the second argument, up to a colon.
@@ -1240,6 +1383,64 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         attribute.ArgumentList?.Arguments.Skip(1).FirstOrDefault()?.Expression is LiteralExpressionSyntax literal
             ? literal.Token.ValueText.Split(':')[0].Trim()
             : "";
+
+    /// <summary>
+    /// Code every analyzer skips, so the build can't report it there: a type or member marked [GeneratedCode], and
+    /// lines after '#line hidden'. For the gate, which reports these itself.
+    /// </summary>
+    public static IEnumerable<Diagnostic> HiddenFromAnalyzers(SyntaxTree tree, SemanticModel? model, CancellationToken ct)
+    {
+        var root = tree.GetRoot(ct);
+        var aliases = Aliases(root);
+        var generated = root.DescendantNodes().OfType<AttributeSyntax>()
+            .Where(attribute => AttributeKind(attribute, model, aliases, ct) == SwitchOffAttribute.Generated)
+            .Select(attribute => Diagnostic.Create(RuleSwitchedOff, attribute.GetLocation(), Short($"[{attribute}]"),
+                "makes every analyzer skip what it marks", RemoveIt));
+        var hidden = root.DescendantTrivia(descendIntoTrivia: true)
+            .Select(trivia => trivia.GetStructure()).OfType<LineDirectiveTriviaSyntax>()
+            .Where(line => line.Line.IsKind(SyntaxKind.HiddenKeyword))
+            .Select(line => Diagnostic.Create(RuleSwitchedOff, line.GetLocation(), Short(line.ToString()),
+                "hides the code after it from every analyzer", RemoveIt));
+        return generated.Concat(hidden);
+    }
+
+    private enum SwitchOffAttribute { None, Suppression, Generated }
+
+    // Aliases for the attributes, as in 'using Quiet = System.Diagnostics.CodeAnalysis.SuppressMessageAttribute;'.
+    // Found here so the scan works without a semantic model; global aliases in other files need one.
+    private static ImmutableArray<(string Alias, string Target)> Aliases(SyntaxNode root) =>
+        root.DescendantNodes().OfType<UsingDirectiveSyntax>()
+            .Where(u => u.Alias is not null && u.Name is not null)
+            .Select(u => (Alias: u.Alias!.Name.Identifier.ValueText, Target: LastName(u.Name!.ToString())))
+            .ToImmutableArray();
+
+    private static SwitchOffAttribute AttributeKind(AttributeSyntax attribute, SemanticModel? model,
+        ImmutableArray<(string Alias, string Target)> aliases, CancellationToken ct)
+    {
+        // By symbol: the type the attribute binds to, whatever it's called here.
+        var bound = model?.GetSymbolInfo(attribute, ct) is { } info
+            ? (info.Symbol ?? info.CandidateSymbols.FirstOrDefault())?.ContainingType?.ToDisplayString()
+            : null;
+        if (bound is not null && SuppressionAttributes.Contains(bound, StringComparer.Ordinal)) return SwitchOffAttribute.Suppression;
+        if (bound == GeneratedCodeAttribute) return SwitchOffAttribute.Generated;
+
+        // By name, and through any alias in this file: '[SuppressMessage]', '[Quiet]'.
+        var name = LastName(attribute.Name.ToString());
+        // [Quiet] finds an alias called Quiet or QuietAttribute, as the compiler does.
+        var target = aliases.Where(a => a.Alias == name || a.Alias == name + "Attribute").Select(a => a.Target).FirstOrDefault() ?? name;
+        var simple = target.EndsWith("Attribute", StringComparison.Ordinal) ? target.Substring(0, target.Length - "Attribute".Length) : target;
+        return simple switch
+        {
+            "SuppressMessage" or "UnconditionalSuppressMessage" => SwitchOffAttribute.Suppression,
+            // A type of the same name elsewhere doesn't make code generated, so trust the symbol when there is one.
+            "GeneratedCode" when bound is null => SwitchOffAttribute.Generated,
+            _ => SwitchOffAttribute.None,
+        };
+    }
+
+    // The last part of a dotted or alias-qualified name: 'System.Diagnostics.CodeAnalysis.SuppressMessage' -> 'SuppressMessage'.
+    private static string LastName(string name) =>
+        name.Substring(Math.Max(name.LastIndexOf('.'), name.LastIndexOf(':')) + 1).Trim();
 
     private static string Short(string code)
     {
@@ -1273,7 +1474,7 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
             allowed.IsEmpty ? "to a shell project" : "there"));
     }
 
-    private static void AnalyzeReference(OperationAnalysisContext ctx, ImmutableArray<string> allowed,
+    private static void AnalyzeReference(OperationAnalysisContext ctx, ImmutableArray<string> allowed, string? coreFolder,
         Memo<IAssemblySymbol, bool> outside)
     {
         var (member, type) = Referenced(ctx.Operation);
@@ -1282,7 +1483,8 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
             || SymbolEqualityComparer.Default.Equals(assembly, ctx.Compilation.Assembly)) return;
 
         var isOutside = outside.Get(assembly, a =>
-            !(ctx.Compilation.GetMetadataReference(a) is { } reference && IsDotNetBaseLibrary(reference))
+            !(ctx.Compilation.GetMetadataReference(a) is { } reference
+                && IsDotNetBaseLibrary(reference, a, coreFolder))
             && !allowed.Any(entry => entry.EndsWith("*", StringComparison.Ordinal)
                 ? a.Identity.Name.StartsWith(entry.Substring(0, entry.Length - 1), StringComparison.OrdinalIgnoreCase)
                 : a.Identity.Name.Equals(entry, StringComparison.OrdinalIgnoreCase)));
@@ -1292,21 +1494,47 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         Report(ctx, ReferenceOutsidePolicy, ctx.Operation.Syntax, isWholeType ? type.Name : $"{type.Name}.{member.Name}", assembly.Identity.Name);
     }
 
-    // The .NET base library: assemblies from the .NET or .NET Standard reference packs, in a folder named after the
-    // pack (the SDK's packs/Microsoft.NETCore.App.Ref/11.0.0, NuGet's microsoft.netcore.app.ref/11.0.0 or
-    // netstandard.library/2.0.3, or an unpacked Microsoft.NETCore.App.Ref.11.0.0). Not ASP.NET Core's or Windows
-    // Desktop's packs, and not Microsoft's NuGet packages.
+    // The .NET base library: assemblies from the .NET or .NET Standard reference pack the project compiles against.
+    // Three things must hold, so copying a library into a folder with the right name isn't enough:
+    // - the folder is named after the pack (the SDK's packs/Microsoft.NETCore.App.Ref/11.0.0, NuGet's
+    //   microsoft.netcore.app.ref/11.0.0 or netstandard.library/2.0.3, or an unpacked Microsoft.NETCore.App.Ref.11.0.0);
+    // - it's the same folder as the assembly that defines System.Object, so the pack really is the base library;
+    // - the assembly is signed with one of the keys .NET's own assemblies use.
+    // Not ASP.NET Core's or Windows Desktop's packs (another folder), and not Microsoft's NuGet packages.
     private static readonly string[] BaseLibraryPacks = { "/microsoft.netcore.app.ref", "/netstandard.library" };
 
-    private static bool IsDotNetBaseLibrary(MetadataReference reference)
+    // Public key tokens of the assemblies in the .NET and .NET Standard reference packs (Microsoft, ECMA, .NET Core,
+    // the Silverlight-era key some facades keep, and the Microsoft.Extensions key the .NET 11 pack includes).
+    private static readonly string[] BaseLibraryKeys =
+        { "b03f5f7f11d50a3a", "b77a5c561934e089", "cc7b13ffcd2ddd51", "31bf3856ad364e35", "adb9793829ddae60" };
+
+    private static string? BaseLibraryFolder(Compilation compilation) =>
+        compilation.GetSpecialType(SpecialType.System_Object).ContainingAssembly is { } core
+        && compilation.GetMetadataReference(core) is PortableExecutableReference { FilePath: { } path } && IsInBaseLibraryPack(path)
+            ? Folder(path) : null;
+
+    private static bool IsDotNetBaseLibrary(MetadataReference reference, IAssemblySymbol assembly, string? coreFolder)
     {
-        if (reference is not PortableExecutableReference { FilePath: { } path }) return false;
+        if (coreFolder is null || reference is not PortableExecutableReference { FilePath: { } path }) return false;
+        var token = string.Concat(assembly.Identity.PublicKeyToken.Select(b => b.ToString("x2", System.Globalization.CultureInfo.InvariantCulture)));
+        return string.Equals(Folder(path), coreFolder, StringComparison.OrdinalIgnoreCase)
+            && BaseLibraryKeys.Contains(token, StringComparer.Ordinal);
+    }
+
+    private static bool IsInBaseLibraryPack(string path)
+    {
         var normal = path.Replace('\\', '/');
         return BaseLibraryPacks.Any(pack =>
         {
             var at = normal.IndexOf(pack, StringComparison.OrdinalIgnoreCase);
             return at >= 0 && at + pack.Length < normal.Length && normal[at + pack.Length] is '/' or '.';
         });
+    }
+
+    private static string Folder(string path)
+    {
+        var normal = path.Replace('\\', '/');
+        return normal.Substring(0, Math.Max(normal.LastIndexOf('/'), 0));
     }
 
     // Exemptions --------------------------------------------------------------

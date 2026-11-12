@@ -80,6 +80,35 @@ public class ServerTests
         }
     }
 
+    [Fact]
+    public async Task Answers_only_for_the_clients_own_policy()
+    {
+        // A server started with FUNCTIONALLINT_POLICY pointing elsewhere (or nowhere) must not answer for a client
+        // whose environment says otherwise: that client checks in-process, against its own policy.
+        var stop = new CancellationTokenSource();
+        var server = Task.Run(() => Server.RunAsync(stop.Token));
+        try
+        {
+            await WaitForAsync(() => Server.StatusAsync().Result.Running);
+            var request = new Server.Request("Core.csproj", null, Path.GetTempPath(), Policy: "/nowhere/functionallint.policy");
+
+            using var socket = new System.Net.Sockets.Socket(System.Net.Sockets.AddressFamily.Unix, System.Net.Sockets.SocketType.Stream,
+                System.Net.Sockets.ProtocolType.Unspecified);
+            await socket.ConnectAsync(new System.Net.Sockets.UnixDomainSocketEndPoint(Server.SocketPath!));
+            await using var stream = new System.Net.Sockets.NetworkStream(socket, ownsSocket: false);
+            await System.Text.Json.JsonSerializer.SerializeAsync(stream, request);
+            socket.Shutdown(System.Net.Sockets.SocketShutdown.Send);
+            var response = await System.Text.Json.JsonSerializer.DeserializeAsync<Server.Response>(stream);
+            Assert.Equal(new Server.Response(2, "", Restart: true), response);
+            Assert.Null(await Server.TryAskAsync(request, TimeSpan.FromSeconds(10)));
+        }
+        finally
+        {
+            stop.Cancel();
+            await server;
+        }
+    }
+
     private static async Task<Server.Response> AskAsync(Server.Request request) =>
         await Server.TryAskAsync(request, TimeSpan.FromSeconds(120)) ?? throw new Xunit.Sdk.XunitException("The server didn't answer.");
 
