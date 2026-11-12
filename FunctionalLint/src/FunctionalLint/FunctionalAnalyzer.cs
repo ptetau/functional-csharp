@@ -3,7 +3,6 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
-using System.Reflection;
 using System.Threading;
 using FunctionalLint.Adapters;
 using Microsoft.CodeAnalysis;
@@ -815,10 +814,7 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         return !cases.IsEmpty && cases.All(c => Has(c, matched));
     }
 
-    private static IEnumerable<INamedTypeSymbol> BaseTypes(ITypeSymbol type)
-    {
-        for (var current = type.BaseType; current is not null; current = current.BaseType) yield return current;
-    }
+    private static IEnumerable<INamedTypeSymbol> BaseTypes(ITypeSymbol type) => Sequences.Unfold(type.BaseType, t => t.BaseType);
 
     // A union's case types: the types its one-parameter constructors take (`union Pet(Cat, Dog)` has Pet(Cat) and Pet(Dog)).
     private static ImmutableArray<ITypeSymbol> UnionCases(ITypeSymbol type) =>
@@ -867,25 +863,13 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
 
     // C# 15 `closed` types. In source the modifier is visible in the syntax. For compiled types only the compiler
     // knows, through ITypeSymbol.IsClosed, which is still marked experimental. This analyzer is built against an
-    // older Roslyn, so it reads that property by reflection and quietly does without it if it ever goes away.
-    private static readonly PropertyInfo? IsClosedProperty =
-        typeof(ITypeSymbol).GetRuntimeProperties().FirstOrDefault(p => p.Name == "IsClosed" && p.PropertyType == typeof(bool));
-
+    // older Roslyn, so an adapter reads that property by reflection (NewerRoslyn.IsClosed).
     private static bool IsClosed(ITypeSymbol type)
     {
         var definition = type.OriginalDefinition;
-        if (definition.DeclaringSyntaxReferences.Any(r =>
-                r.GetSyntax() is TypeDeclarationSyntax declaration && declaration.Modifiers.Any(m => m.Text == "closed")))
-            return true;
-
-        try
-        {
-            return IsClosedProperty?.GetValue(definition) is true;
-        }
-        catch (TargetInvocationException)
-        {
-            return false;
-        }
+        return definition.DeclaringSyntaxReferences.Any(r =>
+                r.GetSyntax() is TypeDeclarationSyntax declaration && declaration.Modifiers.Any(m => m.Text == "closed"))
+            || NewerRoslyn.IsClosed(definition);
     }
 
     // FP0014 Collections in records ---------------------------------------------
@@ -1086,21 +1070,20 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         op.Arguments.FirstOrDefault(a => a.Parameter?.Name == parameter && a.ArgumentKind != ArgumentKind.DefaultValue)?.Value
             is { ConstantValue: not { HasValue: true, Value: null } } value ? value : null;
 
-    private static IAnonymousFunctionOperation? Lambda(IOperation? argument)
-    {
-        while (argument is IConversionOperation or IDelegateCreationOperation)
-            argument = argument is IConversionOperation c ? c.Operand : ((IDelegateCreationOperation)argument).Target;
-        return argument as IAnonymousFunctionOperation;
-    }
+    // The lambda an argument passes, through conversions and delegate creation.
+    private static IAnonymousFunctionOperation? Lambda(IOperation? argument) =>
+        Sequences.Unfold(argument, a => a switch
+        {
+            IConversionOperation c => c.Operand,
+            IDelegateCreationOperation d => d.Target,
+            _ => null,
+        }).LastOrDefault() as IAnonymousFunctionOperation;
 
     // What a one-line lambda returns: `x => x.Sku` gives `x.Sku`.
-    private static IOperation? Returned(IAnonymousFunctionOperation lambda)
-    {
-        var value = lambda.Body.Operations.Length == 1 && lambda.Body.Operations[0] is IReturnOperation { ReturnedValue: { } returned }
-            ? returned : null;
-        while (value is IConversionOperation { IsImplicit: true, Conversion.IsIdentity: true } c) value = c.Operand;
-        return value;
-    }
+    private static IOperation? Returned(IAnonymousFunctionOperation lambda) =>
+        Sequences.Unfold(
+            lambda.Body.Operations.Length == 1 && lambda.Body.Operations[0] is IReturnOperation { ReturnedValue: { } returned } ? returned : null,
+            v => v is IConversionOperation { IsImplicit: true, Conversion.IsIdentity: true } c ? c.Operand : null).LastOrDefault();
 
     // `x => x`
     private static bool IsIdentity(IAnonymousFunctionOperation lambda) =>
@@ -1118,8 +1101,8 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
     {
         if (Returned(a)?.Syntax is not { } x || Returned(b)?.Syntax is not { } y) return false;
         var (pa, pb) = (a.Symbol.Parameters.FirstOrDefault()?.Name, b.Symbol.Parameters.FirstOrDefault()?.Name);
-        var (ta, tb) = (x.DescendantTokens().ToList(), y.DescendantTokens().ToList());
-        return ta.Count == tb.Count && ta.Zip(tb, (s, t) => s.Text == t.Text || s.Text == pa && t.Text == pb).All(same => same);
+        var (ta, tb) = (x.DescendantTokens().ToImmutableArray(), y.DescendantTokens().ToImmutableArray());
+        return ta.Length == tb.Length && ta.Zip(tb, (s, t) => s.Text == t.Text || s.Text == pa && t.Text == pb).All(same => same);
     }
 
     private static readonly ImmutableHashSet<string> KeepsItemsUnique = ImmutableHashSet.Create(StringComparer.Ordinal,

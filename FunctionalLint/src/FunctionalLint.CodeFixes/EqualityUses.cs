@@ -59,60 +59,53 @@ internal static class EqualityUses
 
     private static async Task<ImmutableHashSet<string>> FindAsync(Solution solution)
     {
-        var compared = new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default);
-        foreach (var project in solution.Projects.Where(p => p.Language == LanguageNames.CSharp))
+        var compilations = await Task.WhenAll(solution.Projects
+            .Where(p => p.Language == LanguageNames.CSharp)
+            .Select(p => p.GetCompilationAsync())).ConfigureAwait(false);
+        var found = compilations.OfType<Compilation>().SelectMany(compilation => compilation.SyntaxTrees.SelectMany(tree =>
         {
-            if (await project.GetCompilationAsync().ConfigureAwait(false) is not { } compilation) continue;
-            foreach (var tree in compilation.SyntaxTrees)
-            {
-                var model = compilation.GetSemanticModel(tree);
-                var root = await tree.GetRootAsync().ConfigureAwait(false);
-                foreach (var node in root.DescendantNodes())
-                    foreach (var type in ComparedAt(node, model))
-                        Add(compared, type);
-            }
-        }
-        return compared.Select(Key).ToImmutableHashSet();
+            var model = compilation.GetSemanticModel(tree);
+            return tree.GetRoot().DescendantNodes().SelectMany(node => ComparedAt(node, model));
+        }));
+        return found.Aggregate(ImmutableHashSet.Create<ITypeSymbol>(SymbolEqualityComparer.Default), Add)
+            .Select(Key).ToImmutableHashSet();
     }
 
-    private static IEnumerable<ITypeSymbol?> ComparedAt(SyntaxNode node, SemanticModel model)
+    private static IEnumerable<ITypeSymbol?> ComparedAt(SyntaxNode node, SemanticModel model) => node switch
     {
-        switch (node)
-        {
-            case BinaryExpressionSyntax binary when binary.IsKind(SyntaxKind.EqualsExpression) || binary.IsKind(SyntaxKind.NotEqualsExpression):
-                if (IsNull(binary.Left) || IsNull(binary.Right)) break;
-                yield return model.GetTypeInfo(binary.Left).Type;
-                yield return model.GetTypeInfo(binary.Right).Type;
-                break;
+        BinaryExpressionSyntax binary when binary.IsKind(SyntaxKind.EqualsExpression) || binary.IsKind(SyntaxKind.NotEqualsExpression) =>
+            IsNull(binary.Left) || IsNull(binary.Right)
+                ? []
+                : [model.GetTypeInfo(binary.Left).Type, model.GetTypeInfo(binary.Right).Type],
 
-            case InvocationExpressionSyntax invocation when Name(invocation) is { } name
-                && (ComparingMethods.Contains(name) || ComparingCalls.Contains(name) || name is "Create" or "CreateRange"):
-                var symbol = model.GetSymbolInfo(invocation).Symbol ?? model.GetSymbolInfo(invocation).CandidateSymbols.FirstOrDefault();
-                if (symbol is not IMethodSymbol method) break;
+        InvocationExpressionSyntax invocation when Name(invocation) is { } name
+            && (ComparingMethods.Contains(name) || ComparingCalls.Contains(name) || name is "Create" or "CreateRange") =>
+            (model.GetSymbolInfo(invocation).Symbol ?? model.GetSymbolInfo(invocation).CandidateSymbols.FirstOrDefault()) is IMethodSymbol method
+                ? ComparedBy(invocation, name, method, model)
+                : [],
 
-                if (ComparingMethods.Contains(name))
-                {
-                    var key = method.TypeParameters.Select((p, i) => (p, i)).FirstOrDefault(x => x.p.Name == "TKey");
-                    foreach (var argument in key.p is null ? method.TypeArguments : ImmutableArray.Create(method.TypeArguments[key.i]))
-                        yield return argument;
-                }
-                if (ComparingListMethods.Contains(name) && !method.IsStatic)
-                    foreach (var argument in method.ContainingType.TypeArguments)
-                        yield return argument;
-                if (ComparingCalls.Contains(name))
-                {
-                    if (invocation.Expression is MemberAccessExpressionSyntax access && !method.IsStatic)
-                        yield return model.GetTypeInfo(access.Expression).Type;
-                    foreach (var argument in invocation.ArgumentList.Arguments)
-                        yield return model.GetTypeInfo(argument.Expression).Type;
-                }
-                if (HashedArgument(method.ReturnType) is { } hashed) yield return hashed;
-                break;
+        GenericNameSyntax generic when HashingTypes.Contains(generic.Identifier.ValueText) =>
+            model.GetSymbolInfo(generic).Symbol is INamedTypeSymbol named ? [HashedArgument(named)] : [],
 
-            case GenericNameSyntax generic when HashingTypes.Contains(generic.Identifier.ValueText):
-                if (model.GetSymbolInfo(generic).Symbol is INamedTypeSymbol named) yield return HashedArgument(named);
-                break;
-        }
+        _ => [],
+    };
+
+    // What a call compares: its items or keys, a list's items, the receiver and arguments of Equals and assertions,
+    // and the key or item of a dictionary or set it returns.
+    private static IEnumerable<ITypeSymbol?> ComparedBy(InvocationExpressionSyntax invocation, string name, IMethodSymbol method, SemanticModel model)
+    {
+        IEnumerable<ITypeSymbol?> items = !ComparingMethods.Contains(name) ? []
+            : method.TypeParameters.FirstOrDefault(p => p.Name == "TKey") is { } key ? [method.TypeArguments[key.Ordinal]]
+            : method.TypeArguments;
+        IEnumerable<ITypeSymbol?> listItems = ComparingListMethods.Contains(name) && !method.IsStatic ? method.ContainingType.TypeArguments : [];
+        IEnumerable<ITypeSymbol?> receiver = ComparingCalls.Contains(name) && invocation.Expression is MemberAccessExpressionSyntax access && !method.IsStatic
+            ? [model.GetTypeInfo(access.Expression).Type]
+            : [];
+        IEnumerable<ITypeSymbol?> arguments = ComparingCalls.Contains(name)
+            ? invocation.ArgumentList.Arguments.Select(argument => model.GetTypeInfo(argument.Expression).Type)
+            : [];
+        IEnumerable<ITypeSymbol?> hashed = HashedArgument(method.ReturnType) is { } type ? [type] : [];
+        return items.Concat(listItems).Concat(receiver).Concat(arguments).Concat(hashed);
     }
 
     // `Dictionary<Tag, int>` hashes Tag.
@@ -124,22 +117,24 @@ internal static class EqualityUses
 
     // A compared type, and what comparing it compares: type arguments and elements, and the members of records,
     // structs, tuples and anonymous types (their equality compares each member).
-    private static void Add(HashSet<ITypeSymbol> compared, ITypeSymbol? type)
-    {
-        if (type is null || type.TypeKind == TypeKind.Error || !compared.Add(type)) return;
-        if (type is IArrayTypeSymbol array) Add(compared, array.ElementType);
-        if (type is not INamedTypeSymbol named) return;
+    private static ImmutableHashSet<ITypeSymbol> Add(ImmutableHashSet<ITypeSymbol> compared, ITypeSymbol? type) =>
+        type is null || type.TypeKind == TypeKind.Error || compared.Contains(type)
+            ? compared
+            : Parts(type).Aggregate(compared.Add(type), Add);
 
-        foreach (var argument in named.TypeArguments) Add(compared, argument);
-        if (ComparesMembers(named))
-            foreach (var member in named.GetMembers().Where(m => !m.IsStatic))
-                Add(compared, member switch
-                {
-                    IFieldSymbol field => field.Type,
-                    IPropertySymbol { IsIndexer: false } property => property.Type,
-                    _ => null,
-                });
-    }
+    private static IEnumerable<ITypeSymbol?> Parts(ITypeSymbol type) => type switch
+    {
+        IArrayTypeSymbol array => [array.ElementType],
+        INamedTypeSymbol named => named.TypeArguments.Concat(ComparesMembers(named)
+            ? named.GetMembers().Where(m => !m.IsStatic).Select(member => member switch
+            {
+                IFieldSymbol field => field.Type,
+                IPropertySymbol { IsIndexer: false } property => property.Type,
+                _ => null,
+            })
+            : []),
+        _ => [],
+    };
 
     // Records, anonymous types and tuples compare member by member, and so do structs that keep ValueType.Equals.
     private static bool ComparesMembers(INamedTypeSymbol type) =>

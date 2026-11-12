@@ -260,8 +260,8 @@ In test sources, `{|FP0001:text|}` means "expect FP0001 on exactly this text". A
 
 ## Its own rules
 
-FunctionalLint is checked by itself. The analyzer and code fixes are gate-only cores in [`functionallint.policy`](../functionallint.policy) (they can't load themselves at build time), and CI gates them with `heal.sh FunctionalLint/FunctionalLint.slnx --check`.
-- **The imperative part is in one file.** [`Adapters.cs`](src/FunctionalLint/Adapters.cs) holds the caches that parallel callbacks share (`Memo`), reporting each diagnostic (`Effects.ReportAll`), and `Sequences.Unfold` (walking up an operation's parents). Everything else follows the rules.
+FunctionalLint is checked by itself. The analyzer and code fixes are gate-only cores in [`functionallint.policy`](../functionallint.policy) (they can't load themselves at build time), and CI gates them with `heal.sh FunctionalLint/FunctionalLint.slnx --check`. They import `build/FunctionalCore.Settings.props`, so their builds make warnings, nullable warnings and CS8509 errors like any core's.
+- **The imperative part is in one file.** [`Adapters.cs`](src/FunctionalLint/Adapters.cs) holds the caches that parallel callbacks share (`Memo`), reporting each diagnostic (`Effects.ReportAll`), `Sequences.Unfold` (walking up an operation's parents or base types), and `NewerRoslyn.IsClosed` (a Roslyn property read by reflection). Everything else follows the rules.
 - **`heal.sh` fixed its own analyzer first** (five signatures). The rest was rewritten by hand: loops became LINQ or recursion, lookup tables became `switch` expressions, and mutable sets became immutable ones.
 - **Dogfooding found four gaps in the lint**, all fixed:
   - FP0004 flagged classes a library requires (an analyzer, a JSON converter).
