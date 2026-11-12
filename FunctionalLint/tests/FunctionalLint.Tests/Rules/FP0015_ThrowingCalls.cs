@@ -71,4 +71,52 @@ public class FP0015_ThrowingCalls
             static int M(string s) => int.Parse(s);
         }
         """);
+
+    [Fact]
+    public Task Calls_guarded_by_ContainsKey_are_allowed() => Verify("""
+        using System.Collections.Generic;
+        using System.Collections.Immutable;
+
+        static class C
+        {
+            static int M(IReadOnlyDictionary<string, int> d, ImmutableDictionary<string, int> m, string k)
+            {
+                var a = d.ContainsKey(k) ? d[k] : 0;
+                var b = !d.ContainsKey(k) ? 0 : d[k];
+                var c = d.ContainsKey(k) && d[k] > 0;
+                var e = !d.ContainsKey(k) || d[k] > 0;
+                var f = m.ContainsKey(k) ? m : m.Add(k, 1);
+                if (d.ContainsKey(k)) { return a + d[k]; }
+                return a + b + (c ? 1 : 0) + (e ? 1 : 0) + f.Count;
+            }
+        }
+        """);
+
+    [Fact]
+    public Task Guards_on_another_key_or_dictionary_dont_count() => Verify("""
+        using System.Collections.Generic;
+
+        static class C
+        {
+            static int M(IReadOnlyDictionary<string, int> d, IReadOnlyDictionary<string, int> other, string k, string j)
+            {
+                var a = d.ContainsKey(j) ? {|FP0015:d[k]|} : 0;
+                var b = other.ContainsKey(k) ? {|FP0015:d[k]|} : 0;
+                var c = d.ContainsKey(k) ? 0 : {|FP0015:d[k]|};
+                return a + b + c;
+            }
+        }
+        """);
+
+    [Fact]
+    public Task Unbounded_searches_are_allowed() => Verify("""
+        using System.Collections.Immutable;
+        using System.Linq;
+
+        static class C
+        {
+            static string Free(string slug, ImmutableHashSet<string> taken) =>
+                Enumerable.Range(1, int.MaxValue).Select(n => n == 1 ? slug : $"{slug}-{n}").First(c => !taken.Contains(c));
+        }
+        """);
 }

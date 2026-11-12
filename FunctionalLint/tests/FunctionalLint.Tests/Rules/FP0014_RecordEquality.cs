@@ -24,6 +24,7 @@ public class FP0014_RecordEquality
 
     [Fact]
     public Task Strings_value_equal_collections_and_custom_equality_are_allowed() => Verify("""
+        using System.Linq;
         using System.Collections;
         using System.Collections.Generic;
         using System.Collections.Immutable;
@@ -49,6 +50,14 @@ public class FP0014_RecordEquality
         public static class NotARecord
         {
             public static readonly ImmutableArray<int> Fine = [];
+        }
+
+        public static class Folds
+        {
+            // A fold's private running state: only compared where you can see it.
+            private sealed record State(ImmutableArray<int> Seen, int Total);
+            public static int Sum(ImmutableArray<int> xs) =>
+                xs.Aggregate(new State([], 0), (s, x) => new State(s.Seen.Add(x), s.Total + x)).Total;
         }
 
         public sealed record Computed(string Csv)

@@ -747,6 +747,10 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         var type = (INamedTypeSymbol)ctx.Symbol;
         if (!type.IsRecord || type.IsImplicitlyDeclared) return;
 
+        // A private nested record (typically a fold's running state) is only compared where you can see it.
+        // Leave it alone: switching it to an array-backed ValueList can make the fold O(n²).
+        if (type.DeclaredAccessibility == Accessibility.Private && type.ContainingType is not null) return;
+
         // A record that writes its own Equals has decided what equality means.
         if (type.GetMembers("Equals").OfType<IMethodSymbol>().Any(m =>
                 !m.IsImplicitlyDeclared && m.Parameters.Length == 1
@@ -814,7 +818,7 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         {
             return name switch
             {
-                "First" when !IsNonEmpty(op) || method.Parameters.Length > 1 =>
+                "First" when (!IsNonEmpty(op) || method.Parameters.Length > 1) && !IsUnboundedSearch(op) =>
                     (name, "nothing matches", "FirstOrDefault, or a list pattern such as 'is [var first, ..]'"),
                 "Last" when !IsNonEmpty(op) || method.Parameters.Length > 1 =>
                     (name, "nothing matches", "LastOrDefault, or a list pattern such as 'is [.., var last]'"),
@@ -833,7 +837,9 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
             return (name, "two items have the same key", "GroupBy on the key first, or ToLookup");
 
         if (owner is "System.Collections.Immutable.ImmutableDictionary<TKey, TValue>"
-                or "System.Collections.Immutable.ImmutableSortedDictionary<TKey, TValue>" && name == "Add")
+                or "System.Collections.Immutable.ImmutableSortedDictionary<TKey, TValue>" && name == "Add"
+            && !(op.Instance is { } dictionary && op.Arguments.FirstOrDefault() is { } addedKey
+                 && IsGuardedByContainsKey(op, dictionary, addedKey.Value, keyPresent: false)))
             return ($"{method.ContainingType.Name}.Add", "the key is already there with a different value", "SetItem");
 
         if (method.IsStatic && name is "Parse" or "ParseExact"
@@ -847,9 +853,60 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         return default;
     }
 
+    // `d.ContainsKey(k) ? d[k] : 0` and `d.ContainsKey(k) ? d : d.Add(k, v)` can't throw: the check guards the call.
+    // Recognised in ?: and if (both are conditional operations), and on the right of && and ||.
+    // The dictionary and key are matched by their source text.
+    private static bool IsGuardedByContainsKey(IOperation op, IOperation dictionary, IOperation key, bool keyPresent)
+    {
+        bool Checks(IOperation condition, bool whenTrue) => condition switch
+        {
+            IUnaryOperation { OperatorKind: UnaryOperatorKind.Not } not => Checks(not.Operand, !whenTrue),
+            IInvocationOperation { TargetMethod.Name: "ContainsKey" } contains =>
+                whenTrue == keyPresent
+                && contains.Instance?.Syntax.ToString() == dictionary.Syntax.ToString()
+                && contains.Arguments.FirstOrDefault()?.Value.Syntax.ToString() == key.Syntax.ToString(),
+            _ => false,
+        };
+
+        for (IOperation child = op, parent = op.Parent!; parent is not null; child = parent, parent = parent.Parent!)
+        {
+            var guarded = parent switch
+            {
+                IConditionalOperation c when c.WhenTrue == child => Checks(c.Condition, whenTrue: true),
+                IConditionalOperation c when c.WhenFalse == child => Checks(c.Condition, whenTrue: false),
+                IBinaryOperation { OperatorKind: BinaryOperatorKind.ConditionalAnd } b when b.RightOperand == child =>
+                    Checks(b.LeftOperand, whenTrue: true),
+                IBinaryOperation { OperatorKind: BinaryOperatorKind.ConditionalOr } b when b.RightOperand == child =>
+                    Checks(b.LeftOperand, whenTrue: false),
+                _ => false,
+            };
+            if (guarded) return true;
+        }
+        return false;
+    }
+
     // `xs.GroupBy(k).ToDictionary(g => g.Key, ...)` can't have duplicate keys, and `xs.DefaultIfEmpty(0).Max()`
     // can't be empty: FP0015's own advice has been followed.
     private static bool HasUniqueKeys(IInvocationOperation op) => SourceIs(op, "GroupBy", "Distinct", "DistinctBy", "ToLookup");
+
+    // `Enumerable.Range(n, int.MaxValue - n).First(...)` (or Repeat) is a search that runs until it finds something:
+    // "the first free slug suffix". It can't run out in practice, so it isn't reported.
+    private static bool IsUnboundedSearch(IInvocationOperation op)
+    {
+        var source = op.Arguments.FirstOrDefault()?.Value;
+        while (source is IConversionOperation conversion) source = conversion.Operand;
+        while (source is IInvocationOperation { TargetMethod.Name: "Select" or "Where" } step)
+        {
+            source = step.Arguments.FirstOrDefault()?.Value;
+            while (source is IConversionOperation inner) source = inner.Operand;
+        }
+
+        return source is IInvocationOperation generator
+            && (generator.TargetMethod is { Name: "From", ContainingType.Name: "Sequences" }
+                || generator.TargetMethod is { Name: "Range" or "Repeat", ContainingType.Name: "Enumerable" }
+                   && generator.Arguments.Length == 2
+                   && generator.Arguments[1].Value.Syntax.ToString().Contains("int.MaxValue"));
+    }
 
     // Sequences that can't be empty: a group from GroupBy, or anything after Append, Prepend or DefaultIfEmpty.
     private static bool IsNonEmpty(IInvocationOperation op)
@@ -884,6 +941,9 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
                 or "System.Collections.Generic.IDictionary<TKey, TValue>")
             .Any(i => op.Property.Parameters.Length == 1
                 && SymbolEqualityComparer.Default.Equals(op.Property.Parameters[0].Type, i.TypeArguments[0]));
+        if (isKeyLookup && op.Instance is { } dictionary && op.Arguments.FirstOrDefault() is { } key
+            && IsGuardedByContainsKey(op, dictionary, key.Value, keyPresent: true)) return default;
+
         return isKeyLookup
             ? (op.Syntax.ToString(), "the key is missing", "TryGetValue or GetValueOrDefault")
             : default;
