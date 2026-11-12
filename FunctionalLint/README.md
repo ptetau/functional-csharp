@@ -170,7 +170,7 @@ Two pieces help a coding agent work in the functional subset.
 
 **Tell it the rules up front.** Copy [`agents/AGENTS.md`](agents/AGENTS.md) into your repository's `AGENTS.md` or `CLAUDE.md`. It's a one-screen summary of how to write functional core code and what to do when the lint complains.
 
-**Check every edit.** [`agents/claude-code-hook.sh`](agents/claude-code-hook.sh) is a Claude Code hook. After Claude edits a `.cs` file in a functional core project, it checks that project and hands any problems straight back to Claude. Problems in the edited file come first, with `[auto-fixable]` marks. Files in other projects are ignored. Add it to `.claude/settings.json`:
+**Check every edit.** [`agents/claude-code-hook.sh`](agents/claude-code-hook.sh) is a Claude Code hook. After Claude edits a `.cs` file in a functional core project, it checks that project and hands any problems straight back to Claude. Problems in the edited file come first, with `[auto-fixable]` marks. Files in other projects are ignored. The hook fails an edit (exit 2) for any problem in the edited file, or an error elsewhere in the project. Warnings elsewhere, such as a rule lowered to `warning` while migrating, are listed but don't fail the edit. Add it to `.claude/settings.json`:
 
 ```json
 {
@@ -190,6 +190,8 @@ Two pieces help a coding agent work in the functional subset.
 **Speed.** The first check loads the project, which takes about 4 seconds. It also starts a check server in the background, which keeps the project loaded and re-reads only the files that changed. After that a check takes about half a second. Adding or removing a file, or changing a project file, makes the server reload that project (about 2 seconds). The server stops after 30 idle minutes, or when FunctionalLint is rebuilt.
 
 - `heal.sh --serve` starts the server yourself; `heal.sh <project> --check` uses it whenever it's running.
+- It also reloads when an `.editorconfig`, `.globalconfig` or `Directory.Build.*` file changes, and stops cleanly on SIGTERM.
+- Its socket is in a folder only you can open (`$XDG_RUNTIME_DIR/functionallint` or `~/.cache/functionallint`).
 - `FUNCTIONALLINT_NO_SERVER=1` turns it off (for example on CI).
 - The first run of all also builds the heal tool, which takes longer.
 

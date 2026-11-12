@@ -83,6 +83,22 @@ public class ValueMapTests
     }
 
     [Fact]
+    public void Equal_maps_hash_the_same_even_with_a_custom_comparer()
+    {
+        var ignoreCase = System.Collections.Immutable.ImmutableDictionary.Create<string, int>(StringComparer.OrdinalIgnoreCase);
+        ValueMap<string, int> upper = ignoreCase.SetItem("A", 1);
+        ValueMap<string, int> lower = ignoreCase.SetItem("a", 1);
+        Assert.Equal(upper, lower);
+        Assert.Equal(upper.GetHashCode(), lower.GetHashCode());
+        Assert.Contains(lower, new HashSet<ValueMap<string, int>> { upper });
+
+        // Different comparers: unequal both ways, so equality stays symmetric.
+        ValueMap<string, int> exact = System.Collections.Immutable.ImmutableDictionary<string, int>.Empty.SetItem("a", 1);
+        Assert.False(lower.Equals(exact));
+        Assert.False(exact.Equals(lower));
+    }
+
+    [Fact]
     public void Lookups_and_building_never_throw()
     {
         var map = new[] { ("x", 1), ("x", 2) }.ToValueMap(p => p.Item1, p => p.Item2);

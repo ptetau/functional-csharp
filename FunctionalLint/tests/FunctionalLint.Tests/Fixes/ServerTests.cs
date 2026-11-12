@@ -33,11 +33,16 @@ public class ServerTests
             // No MSBuild node reuse: a reused node would outlive the restore and keep this test's process tree busy.
             Run("dotnet", $"restore \"{Path.Combine(folder, "Core.csproj")}\" -nodeReuse:false --disable-build-servers -v q");
 
+            // A socket file left by a server that was killed mustn't stop a new one starting.
+            var socket = Server.SocketPath!;
+            File.WriteAllText(socket, "");
             var server = Task.Run(() => Server.RunAsync(stop.Token));
-            await WaitForAsync(() => File.Exists(Server.SocketPath));
 
-            var request = new Server.Request(Path.Combine(folder, "Core.csproj"), file, folder);
-            var clean = await AskAsync(request);
+            // Paths relative to the client's folder, which isn't the server's.
+            var request = new Server.Request("Core.csproj", "Order.cs", folder);
+            Server.Response? answer = null;
+            await WaitForAsync(() => (answer = Server.TryAskAsync(request, TimeSpan.FromSeconds(120)).Result) is not null);
+            var clean = answer!;
             Assert.Equal(0, clean.Code);
 
             File.WriteAllText(file, "namespace Core;\npublic sealed record Order { public int Id { get; set; } }\n");
@@ -52,6 +57,11 @@ public class ServerTests
             File.WriteAllText(added, "namespace Core;\npublic static class Totals { public static int First(int[] xs) => System.Linq.Enumerable.First(xs); }\n");
             var withNewFile = await AskAsync(request with { Focus = added });
             Assert.Contains("FP0015", withNewFile.Report);
+
+            // Config changes are seen too: switching FP0003 off clears it.
+            File.WriteAllText(Path.Combine(folder, ".editorconfig"), "root = true\n[*.cs]\ndotnet_diagnostic.FP0003.severity = none\n");
+            var configured = await AskAsync(request);
+            Assert.DoesNotContain("FP0003", configured.Report);
         }
         finally
         {

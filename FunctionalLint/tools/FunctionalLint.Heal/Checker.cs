@@ -98,7 +98,8 @@ public static class Checker
             .ThenBy(r => r.Diagnostic.Location.SourceTree?.FilePath, StringComparer.Ordinal)
             .ThenBy(r => r.Diagnostic.Location.SourceSpan.Start)
             .Select(r => (Line: Format(r.Diagnostic, cwd) + (r.Fixable ? " [auto-fixable]" : ""), r.Fixable,
-                          InFocus: r.Diagnostic.Location.SourceTree?.FilePath == focus, IsOurs: Healer.IsOurs(r.Diagnostic)))
+                          InFocus: r.Diagnostic.Location.SourceTree?.FilePath == focus, IsOurs: Healer.IsOurs(r.Diagnostic),
+                          IsError: r.Diagnostic.Severity == DiagnosticSeverity.Error))
             .DistinctBy(r => r.Line)
             .ToList();
 
@@ -114,6 +115,11 @@ public static class Checker
             // An agent wants the file it just touched; cap the rest so the message stays readable.
             var here = ordered.Where(r => r.InFocus).ToList();
             var elsewhere = ordered.Where(r => !r.InFocus).ToList();
+
+            // Only fail the edit for the file just touched, or for errors elsewhere. Warnings elsewhere (a rule
+            // lowered to "warning" while migrating) don't fail the build, so they mustn't fail every edit either.
+            if (here.Count == 0 && !elsewhere.Any(r => r.IsError))
+                return (0, report.ToString());
             report.WriteLine($"FunctionalLint: {here.Count} problem(s) in {Path.GetFileName(focus)}, {elsewhere.Count} elsewhere in the project.");
             here.ForEach(r => report.WriteLine(r.Line));
             elsewhere.Take(10).ToList().ForEach(r => report.WriteLine(r.Line));

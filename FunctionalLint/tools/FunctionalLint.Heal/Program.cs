@@ -48,11 +48,13 @@ async Task<(int Code, string Report)> CheckAsync(string target, string? focus, b
     if (!target.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
         return await CheckHereAsync(target, focus);
 
-    if (await Server.TryAskAsync(new Server.Request(target, focus, cwd), TimeSpan.FromSeconds(60)) is { } answer)
+    // The server may run in another folder, so send absolute paths.
+    var request = new Server.Request(Path.GetFullPath(target), focus is null ? null : Path.GetFullPath(focus), cwd);
+    if (await Server.TryAskAsync(request, TimeSpan.FromSeconds(60)) is { } answer)
         return (answer.Code, answer.Report);
 
     var result = await CheckHereAsync(target, focus);
-    if (startServer) Server.StartInBackground();
+    if (startServer) await Server.StartInBackgroundAsync();
     return result;
 }
 
