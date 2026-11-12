@@ -130,6 +130,35 @@ public class HealerTests
     }
 
     [Fact]
+    public async Task Never_breaks_a_project_that_depends_on_the_healed_one()
+    {
+        // Core's setter would become `init`, which compiles in Core but breaks Host's `s.Retries = 3`.
+        var references = await Lint.References.ResolveAsync(LanguageNames.CSharp, default);
+        var core = ProjectId.CreateNewId();
+        var host = ProjectId.CreateNewId();
+        var coreDoc = DocumentId.CreateNewId(core);
+        ProjectInfo Project(ProjectId id, string name, OutputKind kind) => ProjectInfo.Create(id, VersionStamp.Default, name, name,
+            LanguageNames.CSharp, compilationOptions: new CSharpCompilationOptions(kind),
+            parseOptions: new CSharpParseOptions(Lint.CSharp15), metadataReferences: references);
+
+        var solution = new AdhocWorkspace().CurrentSolution
+            .AddProject(Project(core, "Core", OutputKind.DynamicallyLinkedLibrary))
+            .AddDocument(coreDoc, "Settings.cs", SourceText.From("public record Settings { public int Retries { get; set; } }"), filePath: "/core/Settings.cs")
+            .AddProject(Project(host, "Host", OutputKind.DynamicallyLinkedLibrary))
+            .AddProjectReference(host, new ProjectReference(core))
+            .AddDocument(DocumentId.CreateNewId(host), "Use.cs",
+                SourceText.From("public static class Use { public static void M(Settings s) { s.Retries = 3; } }"), filePath: "/host/Use.cs");
+
+        var result = await Healer.HealAsync(solution.GetProject(core)!);
+
+        Assert.Contains("set;", await Text(result, coreDoc));
+        Assert.Empty(result.Fixed);
+        Assert.Contains(result.Remaining, d => d.Id == "FP0003");
+        Assert.False(await Healer.IsFixableAsync(solution.GetProject(core)!,
+            (await Healer.DiagnoseAsync(solution.GetProject(core)!)).Single(d => d.Id == "FP0003")));
+    }
+
+    [Fact]
     public async Task Leaves_C_sharp_15_code_alone()
     {
         var source = """

@@ -121,3 +121,21 @@ public class ClassFixSafetyTests
         }
         """);
 }
+
+public class ClassFixLayoutTests
+{
+    [Fact]
+    public Task Hand_aligned_code_keeps_its_layout() => VerifyFix<ClassFix>("""
+        public class {|FP0004:Point|}
+        {
+            public int X     { get; init; }
+            public int Width { get; init; }
+        }
+        """, """
+        public record Point
+        {
+            public int X     { get; init; }
+            public int Width { get; init; }
+        }
+        """);
+}

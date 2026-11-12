@@ -52,9 +52,18 @@ public sealed class ReadOnlySignatureFix : CodeFixProvider
         var model = await context.Document.GetSemanticModelAsync(context.CancellationToken).ConfigureAwait(false);
         if (model is null) return;
 
-        var swaps = typeSyntax.DescendantNodesAndSelf().OfType<GenericNameSyntax>()
+        // Swap the outermost mutable type, and an inner one only where every enclosing generic is covariant there.
+        // `Dictionary<string, List<int>>` becomes `IReadOnlyDictionary<string, List<int>>`: swapping the inner List
+        // too would give IReadOnlyDictionary<string, IReadOnlyList<int>>, which a Dictionary<string, List<int>>
+        // doesn't convert to, because a dictionary's value type is invariant. `IReadOnlyList<IList<int>>` can become
+        // `IReadOnlyList<IReadOnlyList<int>>`, because IReadOnlyList<out T> is covariant.
+        var candidates = typeSyntax.DescendantNodesAndSelf().OfType<GenericNameSyntax>()
             .Select(name => (Name: name, Replacement: Replacement(model, name)))
             .Where(s => s.Replacement is not null)
+            .ToList();
+        var swaps = candidates
+            .Where(s => !candidates.Any(outer => outer.Name != s.Name && outer.Name.Span.Contains(s.Name.Span)))
+            .Where(s => OnlyInCovariantPositions(model, s.Name, typeSyntax))
             .ToList();
         if (swaps.Count == 0) return;
 
@@ -81,6 +90,18 @@ public sealed class ReadOnlySignatureFix : CodeFixProvider
         return model.Compilation.GetTypeByMetadataName($"System.Collections.Generic.{replacement}`{arity}") is null
             ? null
             : replacement;
+    }
+
+    private static bool OnlyInCovariantPositions(SemanticModel model, SyntaxNode name, SyntaxNode outermost)
+    {
+        for (var node = name; node != outermost && node.Parent is not null; node = node.Parent)
+        {
+            if (node.Parent is not TypeArgumentListSyntax arguments || arguments.Parent is not GenericNameSyntax generic) continue;
+            if (model.GetSymbolInfo(generic).Symbol is not INamedTypeSymbol type) return false;
+            var index = arguments.Arguments.IndexOf((TypeSyntax)node);
+            if (index < 0 || type.OriginalDefinition.TypeParameters[index].Variance != VarianceKind.Out) return false;
+        }
+        return true;
     }
 
     // `IReadOnlyList<int> xs = new();` can't compile: there's no interface to construct. Leave those to a person.

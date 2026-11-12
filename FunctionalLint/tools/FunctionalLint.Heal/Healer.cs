@@ -157,10 +157,21 @@ public static class Healer
     private static string Key(Diagnostic d) =>
         $"{d.Location.SourceTree?.FilePath}|{d.GetMessage()}|{d.Location.SourceTree?.GetText().ToString(d.Location.SourceSpan)}";
 
+    // Compiler errors in the project and in every project that depends on it: turning `set` into `init` compiles
+    // in the project itself but breaks a host project that sets the property.
     private static async Task<int> CompilerErrorsAsync(Project project, CancellationToken ct)
     {
-        var compilation = await project.GetCompilationAsync(ct);
-        return compilation?.GetDiagnostics(ct).Count(d => d.Severity == DiagnosticSeverity.Error) ?? 0;
+        var solution = project.Solution;
+        var affected = solution.GetProjectDependencyGraph()
+            .GetProjectsThatTransitivelyDependOnThisProject(project.Id)
+            .Prepend(project.Id);
+        var total = 0;
+        foreach (var id in affected)
+        {
+            var compilation = await solution.GetProject(id)!.GetCompilationAsync(ct);
+            total += compilation?.GetDiagnostics(ct).Count(d => d.Severity == DiagnosticSeverity.Error) ?? 0;
+        }
+        return total;
     }
 
     private static async Task<Project?> FixOneAsync(Project project, CodeFixProvider fixer, Diagnostic diagnostic, CancellationToken ct)
@@ -200,15 +211,13 @@ public static class Healer
         return null;
     }
 
-    /// <summary>True if one of the fixes would change the code for this diagnostic.</summary>
+    /// <summary>True if heal would really fix this: a fix is offered and applying it adds no compiler error.</summary>
     public static async Task<bool> IsFixableAsync(Project project, Diagnostic diagnostic, CancellationToken ct = default)
     {
-        if (project.GetDocument(diagnostic.Location.SourceTree) is not { } document) return false;
         foreach (var fixer in Fixers.Where(f => f.FixableDiagnosticIds.Contains(diagnostic.Id)))
         {
-            var offered = false;
-            await fixer.RegisterCodeFixesAsync(new CodeFixContext(document, diagnostic, (_, _) => offered = true, ct));
-            if (offered) return true;
+            if (await FixOneAsync(project, fixer, diagnostic, ct) is not { } candidate) continue;
+            if (await CompilerErrorsAsync(candidate, ct) <= await CompilerErrorsAsync(project, ct)) return true;
         }
         return false;
     }
