@@ -75,6 +75,8 @@ public static class Formats
         WriteIndented = true,
         // Keep '&' in URLs and non-ASCII labels readable; the output is not embedded in HTML.
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+        // Same bytes on every OS, like the other formats (the default is Environment.NewLine, "\r\n" on Windows).
+        NewLine = "\n",
     };
 
     private static string Json(Timeline timeline) =>
