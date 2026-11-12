@@ -232,6 +232,8 @@ Two pieces help a coding agent work in the functional subset.
 - [`agents/hook-smoke-test.sh`](agents/hook-smoke-test.sh) `<a .cs file in a clean core project>` runs the hook and the server end to end: a clean edit, an edit with a loop (rejected), then its rewrite. CI runs it on Linux, macOS and Windows.
 - The first run of all also builds the heal tool, which takes longer.
 
+**Measure it.** [`agents/eval`](agents/eval/README.md) runs Claude Code headless on fixed tasks in a fresh core project with this setup, and scores the runs. Some tasks invite a bypass on purpose. In the baseline, none of 8 runs tried to switch a check off, and all 8 ended with a clean gate and build.
+
 Other agents can use the same check: `dotnet FunctionalLint/tools/FunctionalLint.Heal/bin/Release/net11.0/FunctionalLint.Heal.dll --hook` reads `{"tool_input": {"file_path": "..."}}` on stdin and exits 2 with the problems on stderr.
 
 ## Run the tests

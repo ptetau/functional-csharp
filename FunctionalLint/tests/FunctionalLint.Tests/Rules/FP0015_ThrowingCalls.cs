@@ -140,6 +140,34 @@ public class FP0015_MoreSafeCalls
         """);
 
     [Fact]
+    public Task Groups_kept_in_a_local_or_copied_still_have_unique_keys() => Verify("""
+        using System.Collections.Immutable;
+        using System.Linq;
+
+        public sealed record Row(string Sku, decimal Price);
+
+        public static class C
+        {
+            // Found by the agent eval: grouping once, checking for duplicates, then building the dictionary.
+            public static ImmutableDictionary<string, decimal> A(ImmutableArray<Row> rows)
+            {
+                var bySku = rows.GroupBy(static row => row.Sku).ToImmutableArray();
+                return bySku.ToImmutableDictionary(static group => group.Key, static group => group.First().Price);
+            }
+
+            public static ImmutableDictionary<string, int> B(ImmutableArray<string> skus) =>
+                skus.Distinct().Where(static s => s.Length > 0).OrderBy(static s => s).ToImmutableDictionary(static s => s, static s => s.Length);
+
+            // A local that isn't distinct is still reported.
+            public static ImmutableDictionary<string, decimal> D(ImmutableArray<Row> rows)
+            {
+                var copy = rows.Where(static row => row.Price > 0).ToImmutableArray();
+                return {|FP0015:copy.ToImmutableDictionary(static row => row.Sku, static row => row.Price)|};
+            }
+        }
+        """);
+
+    [Fact]
     public Task Copying_a_dictionary_with_a_new_comparer_can_still_collide() => Verify("""
         using System;
         using System.Collections.Generic;

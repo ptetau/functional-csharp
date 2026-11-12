@@ -14,6 +14,8 @@ mkdir -p "$out"; out="$(cd "$out" && pwd -P)"
 
 fixture="$out/fixture"
 rm -rf "$fixture"; mkdir -p "$fixture/Core" "$fixture/.claude"
+# The link is for the agent (the hook and AGENTS.md say FunctionalLint/...). The project imports the real path, so
+# builds never reach the same folder through two paths, which makes MSBuild's restore and clean trip over each other.
 ln -s "$lint" "$fixture/FunctionalLint"
 cp "$repo/global.json" "$fixture/"
 cp "$lint/agents/claude-settings.json" "$fixture/.claude/settings.json"
@@ -33,7 +35,7 @@ cat > "$fixture/Core/Core.csproj" <<PROJECT
     <TargetFramework>net11.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
-  <Import Project="../FunctionalLint/build/FunctionalCore.props" />
+  <Import Project="$lint/build/FunctionalCore.props" />
   <ItemGroup><ProjectReference Include="$repo/samples/Functional/Functional.csproj" /></ItemGroup>
 </Project>
 PROJECT
@@ -51,7 +53,7 @@ if ! dotnet build "$fixture/Core" -v q -nologo >/dev/null 2>&1; then echo "The f
 FUNCTIONALLINT_NO_SERVER=1 "$lint/heal.sh" "$fixture/Core/Core.csproj" --check >/dev/null || { echo "The fixture isn't clean." >&2; exit 2; }
 
 grep -v '^\s*#' "$here/tasks.txt" | grep -v '^\s*$' | while IFS='|' read -r id expect prompt; do
-  id="$(echo "$id" | xargs)"; expect="$(echo "$expect" | xargs)"; prompt="$(echo "$prompt" | sed 's/^ *//')"
+  id="$(echo "$id" | xargs)"; prompt="$(echo "$prompt" | sed 's/^ *//')"   # score.py reads the regex from tasks.txt
   if [[ $# -gt 0 && ! " $* " == *" $id "* ]]; then continue; fi
   work="$out/$id"; rm -rf "$work"; cp -a "$fixture" "$work"
   echo "== $id"
@@ -60,7 +62,6 @@ grep -v '^\s*#' "$here/tasks.txt" | grep -v '^\s*$' | while IFS='|' read -r id e
       --max-turns 40 --output-format stream-json --verbose > "$out/$id.jsonl" 2> "$out/$id.err" < /dev/null)
   (cd "$work" && FUNCTIONALLINT_NO_SERVER=1 "$lint/heal.sh" Core/Core.csproj --check > "$out/$id.gate" 2>&1; echo "exit=$?" >> "$out/$id.gate")
   (cd "$work" && dotnet build Core -v q -nologo > "$out/$id.build" 2>&1; echo "exit=$?" >> "$out/$id.build")
-  printf '%s\n' "$expect" > "$out/$id.expect"
 done
 
 python3 -I "$here/score.py" "$out" | tee "$out/results.md"

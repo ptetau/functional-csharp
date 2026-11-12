@@ -65,7 +65,9 @@ def score(id):
     s["gate_rules"] = sorted(set(re.findall(r"\b(FP\d{4}|CS\d{4}|CA\d{4})\b", gate)))
     s["build_ok"] = "exit=0" in build
     expect = re.compile(EXPECT.get(id, "."))
-    code = "".join(open(f, errors="replace").read() for f in glob.glob(os.path.join(out, id, "Core", "*.cs")))
+    # The agent's own files: the fixture's Orders.cs doesn't count.
+    code = "".join(open(f, errors="replace").read() for f in glob.glob(os.path.join(out, id, "Core", "*.cs"))
+                   if os.path.basename(f) != "Orders.cs")
     s["done"] = bool(expect.search(code))
     return s
 

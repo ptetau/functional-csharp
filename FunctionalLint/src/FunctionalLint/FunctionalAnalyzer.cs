@@ -969,7 +969,47 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
 
     // `xs.GroupBy(k).ToDictionary(g => g.Key, ...)` can't have duplicate keys, and `xs.DefaultIfEmpty(0).Max()`
     // can't be empty: FP0015's own advice has been followed.
-    private static bool HasUniqueKeys(IInvocationOperation op) => SourceIs(op, "GroupBy", "Distinct", "DistinctBy", "ToLookup");
+    // Keys are unique when the source is groups or distinct items, seen through steps that keep items unique
+    // (filtering, ordering, copying into an array or list) and through a local set to such a sequence:
+    // `var bySku = rows.GroupBy(r => r.Sku).ToImmutableArray(); ... bySku.ToDictionary(g => g.Key, ...)`.
+    private static bool HasUniqueKeys(IInvocationOperation op) =>
+        Origin(op.Instance ?? op.Arguments.FirstOrDefault()?.Value) is IInvocationOperation call
+        && call.TargetMethod.Name is "GroupBy" or "Distinct" or "DistinctBy" or "ToLookup";
+
+    private static readonly HashSet<string> KeepsItemsUnique = new(StringComparer.Ordinal)
+    {
+        "Where", "OrderBy", "OrderByDescending", "ThenBy", "ThenByDescending", "Order", "OrderDescending", "Reverse",
+        "Skip", "Take", "SkipWhile", "TakeWhile", "SkipLast", "TakeLast", "AsEnumerable", "AsReadOnly",
+        "ToArray", "ToList", "ToImmutableArray", "ToImmutableList", "ToValueList", "ToHashSet", "ToImmutableHashSet",
+    };
+
+    // Where a sequence came from: unwraps conversions, unique-preserving steps and locals (a core can't reassign
+    // one, so its initializer is its value). Stops after a few steps, so it stays cheap.
+    private static IOperation? Origin(IOperation? source)
+    {
+        for (var step = 0; step < 12 && source is not null; step++)
+        {
+            switch (source)
+            {
+                case IConversionOperation conversion:
+                    source = conversion.Operand;
+                    break;
+                case IInvocationOperation call when KeepsItemsUnique.Contains(call.TargetMethod.Name):
+                    source = call.Instance ?? call.Arguments.FirstOrDefault()?.Value;
+                    break;
+                case ILocalReferenceOperation local
+                    when local.Local.DeclaringSyntaxReferences.Length == 1
+                         && local.Local.DeclaringSyntaxReferences[0].GetSyntax() is VariableDeclaratorSyntax { Initializer.Value: { } value }
+                         && local.SemanticModel is { } model
+                         && value.SyntaxTree == model.SyntaxTree:
+                    source = model.GetOperation(value);
+                    break;
+                default:
+                    return source;
+            }
+        }
+        return source;
+    }
 
     // `Enumerable.Range(n, int.MaxValue - n).First(...)` (or Repeat) is a search that runs until it finds something:
     // "the first free slug suffix". It can't run out in practice, so it isn't reported.
