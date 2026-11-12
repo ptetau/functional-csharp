@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using FunctionalLint.Heal;
@@ -94,11 +95,26 @@ public class ServerTests
 
     private static void Run(string program, string arguments)
     {
-        var start = new ProcessStartInfo(program, arguments) { UseShellExecute = false };
+        // Output goes to a log file, not a pipe: a pipe could be held open by an MSBuild process that outlives this one.
+        // `dotnet test` doesn't show a child's console, so the log is the only way to see why a restore failed.
+        var log = Path.Combine(Path.GetTempPath(), $"functionallint-{Guid.NewGuid():N}.log");
+        var start = new ProcessStartInfo(program, $"{arguments} -flp:logfile=\"{log}\";verbosity=normal") { UseShellExecute = false };
         start.Environment["MSBUILDDISABLENODEREUSE"] = "1";
-        using var process = Process.Start(start)!;
-        Assert.True(process.WaitForExit(TimeSpan.FromMinutes(3)), $"{program} {arguments} didn't finish.");
-        Assert.Equal(0, process.ExitCode);
+        try
+        {
+            using var process = Process.Start(start)!;
+            Assert.True(process.WaitForExit(TimeSpan.FromMinutes(3)), $"{program} {arguments} didn't finish.");
+            if (process.ExitCode != 0)
+            {
+                var lines = File.Exists(log) ? File.ReadAllLines(log) : ["(no log)"];
+                var errors = lines.Where(l => l.Contains("error", StringComparison.OrdinalIgnoreCase)).ToArray();
+                Assert.Fail($"{program} {arguments} exited {process.ExitCode}:\n" + string.Join("\n", errors.Length > 0 ? errors : lines.TakeLast(40)));
+            }
+        }
+        finally
+        {
+            File.Delete(log);
+        }
     }
 
     [Fact]
