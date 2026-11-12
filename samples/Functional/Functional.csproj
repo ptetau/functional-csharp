@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Small shared library every sample's core uses: Result, Option, Error and the adapter attribute.
+       It is itself a functional core, so it imports the lint. -->
+  <PropertyGroup>
+    <TargetFramework>net11.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <Import Project="..\..\FunctionalLint\build\FunctionalCore.props" />
+
+</Project>

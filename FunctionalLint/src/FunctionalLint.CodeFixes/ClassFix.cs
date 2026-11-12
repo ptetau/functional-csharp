@@ -61,8 +61,12 @@ public sealed class ClassFix : CodeFixProvider
             .Where(m => !m.IsImplicitlyDeclared && m is not INamedTypeSymbol)
             .All(m => m.IsStatic);
 
+    // Only plain data: a class with its own constructor or private state is a service, and turning it into a
+    // record would change its equality without making it any less object-oriented.
     private static bool CanBeRecord(INamedTypeSymbol type, ClassDeclarationSyntax declaration) =>
         declaration.ParameterList is null
+        && type.InstanceConstructors.All(c => c.IsImplicitlyDeclared)
+        && !type.GetMembers().OfType<IFieldSymbol>().Any(f => !f.IsImplicitlyDeclared && f.DeclaredAccessibility != Accessibility.Public)
         && type.BaseType?.SpecialType == SpecialType.System_Object
         // Records generate Equals(object) and GetHashCode-based equality; a hand-written Equals(object) won't compile.
         && !type.GetMembers(nameof(Equals)).OfType<IMethodSymbol>()

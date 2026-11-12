@@ -101,3 +101,23 @@ public class ClassFixTests
         public partial class Split { }
         """);
 }
+
+public class ClassFixSafetyTests
+{
+    [Fact]
+    public Task Services_with_constructors_or_private_state_are_left_alone() => VerifyFix<ClassFix>("""
+        public class {|FP0004:Calculator|}
+        {
+            private readonly int _rate;
+            public Calculator(int rate) { _rate = rate; }
+            public int Apply(int x) => x * _rate;
+        }
+        """, """
+        public class {|FP0004:Calculator|}
+        {
+            private readonly int _rate;
+            public Calculator(int rate) { _rate = rate; }
+            public int Apply(int x) => x * _rate;
+        }
+        """);
+}

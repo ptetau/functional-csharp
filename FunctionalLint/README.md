@@ -6,17 +6,21 @@ A Roslyn analyzer that keeps a C# project functional. It reports errors at build
 
 | Rule   | Forbids | Do this instead | Auto-fix |
 |--------|---------|-----------------|----------|
-| [FP0001](docs/rules/FP0001.md) | `for`, `foreach`, `while`, `do` | LINQ, `Aggregate`, recursion | |
-| [FP0002](docs/rules/FP0002.md) | Reassigning variables, `+=`, `++`, setting fields, array writes, event `+=` | New values, `with` expressions | |
+| [FP0001](docs/rules/FP0001.md) | `for`, `foreach`, `while`, `do`, `goto`, `.ForEach(...)` | LINQ, `Aggregate`, recursion | |
+| [FP0002](docs/rules/FP0002.md) | Reassigning variables, `+=`, `++`, setting fields, array writes, event `+=`, `out`/`ref` to existing variables, `Array.Fill` and friends | New values, `with` expressions | |
 | [FP0003](docs/rules/FP0003.md) | Non-readonly fields, `set` accessors, non-readonly record structs | `readonly`, `init`, `readonly record struct` | Yes |
 | [FP0004](docs/rules/FP0004.md) | Plain classes | Records for data, static classes for functions | When safe |
-| [FP0005](docs/rules/FP0005.md) | Creating `List<T>`, `Dictionary<,>`, `StringBuilder` and similar, including `ToList()` | `System.Collections.Immutable` types | |
+| [FP0005](docs/rules/FP0005.md) | Creating `List<T>`, `Dictionary<,>`, `StringBuilder`, builders, streams and other mutable collections, including `ToList()`; locals typed `IList<T>` etc. | `System.Collections.Immutable` types | Locals |
 | [FP0006](docs/rules/FP0006.md) | Calling legacy code directly | Call it through an `[ImperativeAdapter]` | |
 | [FP0007](docs/rules/FP0007.md) | `throw` | Return an `Error` on your `Result<T>` | |
 | [FP0008](docs/rules/FP0008.md) | `IList<T>`, `ICollection<T>`, `IDictionary<,>`, `List<T>` etc. in signatures | `IReadOnlyList<T>`, `ImmutableArray<T>` | Yes |
 | [FP0009](docs/rules/FP0009.md) | Adapters with legacy types in their public signatures | Return functional types | |
 | [FP0010](docs/rules/FP0010.md) | `async void` | Return `Task` | Yes |
-| [FP0011](docs/rules/FP0011.md) | Clock, `Guid.NewGuid`, `Random`, `Console`, file I/O, `HttpClient` and similar | An adapter, or pass the value in | |
+| [FP0011](docs/rules/FP0011.md) | Clock, `Guid.NewGuid`, `Random`, `Console`, file I/O, `HttpClient`, current culture, parallel LINQ and similar | An adapter, or pass the value in | |
+| [FP0012](docs/rules/FP0012.md) | Ignoring the result of `list.Add(x)`, LINQ, string, date or `Math` methods, or methods on your own records | Use the result: `var updated = list.Add(x)` | |
+| [FP0013](docs/rules/FP0013.md) | `_` arms and switch statements over enums, `closed` types and unions | A switch expression that lists every case | |
+| [FP0014](docs/rules/FP0014.md) | Collections that compare by reference (`ImmutableArray`, lists, arrays) inside records | `ValueList<T>` or another `[ValueEquality]` type | |
+| [FP0015](docs/rules/FP0015.md) | Calls that throw: `First`, `Single`, `Parse`, `dict[key]`, `ToDictionary`... | `FirstOrDefault`, list patterns, `TryParse`, `TryGetValue` | |
 
 Each rule's page has a before/after example. The build output links to it.
 
@@ -28,6 +32,29 @@ These are still allowed:
 - Calling methods with `out` parameters and assigning your own `out` parameters, so `TryParse` style APIs work.
 - Top-level statements (they're host code).
 
+## Requirements
+
+.NET 11 SDK and C# 15 (the default for `net11.0`). The repository's `global.json` pins the SDK.
+C# 15 matters here: `closed` types and `union` types let the compiler check that a switch handles every case.
+
+## Choices: closed records and unions
+
+Model "one of these" as a C# 15 `closed` record, and consume it with a switch expression that lists every case:
+
+```csharp
+public closed record Payment;
+public sealed record Card(string Last4) : Payment;
+public sealed record Cash : Payment;
+
+public static string Describe(Payment p) => p switch
+{
+    Card c => $"card ending {c.Last4}",
+    Cash => "cash",
+};
+```
+
+Add a `Voucher` case later and every switch that doesn't handle it stops compiling (CS8509, an error under the props file). FP0013 stops the two ways around that: a `_` arm, and a switch statement. A `union Pet(Cat, Dog)` works the same way when the cases already exist as separate types.
+
 ## Set up a core project
 
 Import the shared props file into each functional core project:
@@ -36,13 +63,30 @@ Import the shared props file into each functional core project:
 <Import Project="..\FunctionalLint\build\FunctionalCore.props" />
 ```
 
-The props file does four things:
+The props file:
 - Adds the analyzer and its code fixes.
-- Turns on nullable reference types and makes nullable warnings errors.
-- Makes non-exhaustive switch expressions (CS8509) errors, so unions and closed hierarchies are checked properly.
+- Turns on nullable reference types and makes every warning an error. Rules you deliberately lower to warnings (FunctionalLint's and the culture rules) stay warnings.
+- Turns on the .NET culture rules (CA1304, CA1305, CA1309, CA1310, CA1311) as errors, from `FunctionalCore.globalconfig`. Culture is a hidden input like the clock: `amount.ToString("0.00")` prints `3117,60` on a German machine.
+- Makes non-exhaustive switch expressions (CS8509) errors, so a switch over a `closed` type, a `union` or an enum must handle every case.
 - Loads `functional.globalconfig`, where you set the legacy namespaces and any extra side-effecting APIs.
 
 Leave the props file out of host, test and adapter-only projects.
+
+### Or use the NuGet package
+
+To share the linter across repositories, build the package:
+
+```
+dotnet pack src/FunctionalLint.Package -c Release -o artifacts
+```
+
+Push it to your feed, then reference it from each functional core project:
+
+```xml
+<PackageReference Include="FunctionalLint" Version="0.3.0" PrivateAssets="all" />
+```
+
+The package carries the analyzer, the code fixes and the same compiler settings as the props file. It doesn't include `functional.globalconfig`; put your `functional_lint.*` settings in your own `.globalconfig` or `.editorconfig`.
 
 ## Existing imperative code and adapters
 
@@ -59,7 +103,7 @@ Define the attribute once. The analyzer matches it by name.
 public sealed class ImperativeAdapterAttribute : Attribute { }
 ```
 
-An adapter takes legacy services in its constructor. Its public members return only functional types, which FP0009 checks.
+An adapter takes legacy services in its constructor. (The examples use `Result`, `Error` and `Option` from [`samples/Functional`](../samples/Functional), a small library you can copy.) Its public members return only functional types, which FP0009 checks.
 
 ```csharp
 [ImperativeAdapter]
@@ -69,12 +113,11 @@ public sealed class Orders(OrderService service)
     {
         try
         {
-            return new Ok<ImmutableArray<Order>>(
-                service.GetOpenOrders().Select(Order.From).ToImmutableArray());
+            return Result.Ok(service.GetOpenOrders().Select(Order.From).ToImmutableArray());
         }
         catch (SqlException ex)
         {
-            return new Unavailable(ex.Message);
+            return new Error("unavailable", ex.Message);
         }
     }
 }
@@ -98,7 +141,7 @@ For a one-off, use `#pragma warning disable FP0002` around the line.
 
 ## Fix and learn: the agent loop
 
-Some rules have a mechanical fix. `heal.sh` builds the project, applies those fixes, builds again, and prints what it fixed, the habit that avoids each one, and what's left:
+Some rules have a mechanical fix. `heal.sh` loads the project once, applies those fixes, and prints what it fixed, the habit that avoids each one, and what's left:
 
 ```
 $ FunctionalLint/heal.sh src/Core/Core.csproj
@@ -108,20 +151,49 @@ $ FunctionalLint/heal.sh src/Core/Core.csproj
   FP0008 x2. Next time: Take and return IReadOnlyList / IReadOnlyDictionary / ImmutableArray, never List or IList.
   FP0010 x1. Next time: Make async methods return Task, never void.
 
-== Remaining: 3 error(s) to fix by hand
-Orders.cs(19,9): error FP0001: 'foreach' loops are not allowed. Use LINQ, Aggregate or recursion instead.
+== Remaining: 4 to fix by hand (5.4s)
+Orders.cs(20,9): error FP0001: 'foreach' loops are not allowed. Use LINQ, Aggregate or recursion instead.
 ...
 ```
 
-It exits 0 only when the project builds clean, so it works as a pre-commit hook or an agent's "am I done?" check.
-
-When to run what:
-- **After each file write:** `dotnet build --no-restore`. The analyzer adds little; on a 200 KB file it takes about 0.3 s. The compiler is most of the time.
-- **Before commit:** `heal.sh`. Each `dotnet format` pass loads the whole project, so allow 5-10 seconds per fixable rule that fired.
+- `heal.sh <project or solution> --check` reports without changing anything, and marks each problem it could fix `[auto-fixable]`.
+- Exit codes: 0 clean, 1 problems left, 2 couldn't run. So it works as a pre-commit hook or an agent's "am I done?" check.
+- Given a solution, it only touches projects that import `FunctionalCore.props` (or the package).
 
 Auto-fixes only make changes that keep the code's meaning. Where that isn't possible (loops, mutation, throws, side effects) the message says what to write instead. If a fix makes other code stop compiling, that code was mutating something it shouldn't, and the compiler now points at it.
 
 To fix things one at a time in the IDE, use the light bulb on the error.
+
+## Agents
+
+Two pieces help a coding agent work in the functional subset.
+
+**Tell it the rules up front.** Copy [`agents/AGENTS.md`](agents/AGENTS.md) into your repository's `AGENTS.md` or `CLAUDE.md`. It's a one-screen summary of how to write functional core code and what to do when the lint complains.
+
+**Check every edit.** [`agents/claude-code-hook.sh`](agents/claude-code-hook.sh) is a Claude Code hook. After Claude edits a `.cs` file in a functional core project, it checks that project and hands any problems straight back to Claude. Problems in the edited file come first, with `[auto-fixable]` marks. Files in other projects are ignored. Add it to `.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          { "type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/FunctionalLint/agents/claude-code-hook.sh", "timeout": 120 }
+        ]
+      }
+    ]
+  }
+}
+```
+
+**Speed.** The first check loads the project, which takes about 4 seconds. It also starts a check server in the background, which keeps the project loaded and re-reads only the files that changed. After that a check takes about half a second. Adding or removing a file, or changing a project file, makes the server reload that project (about 2 seconds). The server stops after 30 idle minutes, or when FunctionalLint is rebuilt.
+
+- `heal.sh --serve` starts the server yourself; `heal.sh <project> --check` uses it whenever it's running.
+- `FUNCTIONALLINT_NO_SERVER=1` turns it off (for example on CI).
+- The first run of all also builds the heal tool, which takes longer.
+
+Other agents can use the same check: `dotnet FunctionalLint/tools/FunctionalLint.Heal/bin/Release/net11.0/FunctionalLint.Heal.dll --hook` reads `{"tool_input": {"file_path": "..."}}` on stdin and exits 2 with the problems on stderr.
 
 ## Run the tests
 
@@ -134,7 +206,7 @@ The tests are laid out so it's clear where a new case goes:
 | Folder | Checks |
 |--------|--------|
 | `Rules/` | One file per rule: what it reports, exactly where, and what it allows. |
-| `Fixes/` | Each code fix: before and after, including the cases it deliberately leaves alone. |
+| `Fixes/` | Each code fix: before and after, including the cases it deliberately leaves alone. Also the heal engine and the agent hook. |
 | `Guidance/MessageTests.cs` | The exact text of every message, and that each one names the problem and the remedy on one short line. |
 | `Guidance/RuleCatalogTests.cs` | Rules are well formed, and the code, README, rule docs and tests agree. |
 | `Guidance/RobustnessTests.cs` | Half-written code never crashes the analyzer, and a large file is analysed quickly. |
@@ -143,9 +215,10 @@ In test sources, `{|FP0001:text|}` means "expect FP0001 on exactly this text". A
 
 ## What it can't catch
 
-- **Mutating calls on things you were handed.** For example `Array.Sort(xs)`, or a method on a mutable type from a library. FP0005 and FP0008 stop most mutable collections from getting in, which covers most cases.
+- **Mutating methods on library types.** `Array.Sort`, `Array.Fill` and similar are caught (FP0002), but a method that changes a mutable object from a library isn't. FP0005 and FP0008 keep most mutable collections out in the first place.
+- **Mutable objects in readonly fields**, such as a `static readonly JsonSerializerOptions`. `readonly` protects only the reference.
+- **Every way to throw.** FP0015 covers the common calls; indexers on arrays and lists, overflow and casts aren't covered.
 - **Mutation inside libraries you call.**
-- **Locals typed as mutable interfaces.** FP0008 checks signatures, not local variables.
 - **Arrays in signatures.** Arrays are allowed, but writing to an element is flagged.
 
 ## A warning about recursion

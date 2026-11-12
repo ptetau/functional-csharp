@@ -40,6 +40,32 @@ public class FP0004_Classes
         """);
 
     [Fact]
+    public Task Closed_records_and_unions_are_allowed() => Verify("""
+        public closed record Shape;
+        public sealed record Circle(double Radius) : Shape;
+        public sealed record Square(double Side) : Shape;
+
+        public record Cat(string Name);
+        public record Dog(string Name);
+        public union Pet(Cat, Dog);
+
+        public static class Use
+        {
+            public static double Area(Shape s) => s switch
+            {
+                Circle c => 3.14 * c.Radius * c.Radius,
+                Square q => q.Side * q.Side,
+            };
+
+            public static string Name(Pet p) => p switch
+            {
+                Cat c => c.Name,
+                Dog d => d.Name,
+            };
+        }
+        """);
+
+    [Fact]
     public async Task Top_level_statements_do_not_report_the_hidden_Program_class()
     {
         var findings = await Diagnose("""

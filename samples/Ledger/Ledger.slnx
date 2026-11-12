@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="../Functional/Functional.csproj" />
+  <Project Path="Ledger.Core/Ledger.Core.csproj" />
+  <Project Path="Ledger.Cli/Ledger.Cli.csproj" />
+  <Project Path="Ledger.Tests/Ledger.Tests.csproj" />
+</Solution>

@@ -60,10 +60,26 @@ public class MutableStateFixTests
 
     [Fact]
     public Task Record_structs_become_readonly() => VerifyFix<MutableStateFix>("""
-        public record struct {|FP0003:Point|}(int {|FP0003:X|}, int {|FP0003:Y|});
+        public record struct {|FP0003:Point|}(int X, int Y);
         record struct {|FP0003:Empty|};
         """, """
         public readonly record struct Point(int X, int Y);
         readonly record struct Empty;
+        """);
+}
+
+public class MutableStateFixSafetyTests
+{
+    [Fact]
+    public Task Fields_that_could_never_be_set_are_left_alone() => Lint.VerifyFix<MutableStateFix>("""
+        public struct Accumulator
+        {
+            public double {|FP0003:R|};
+        }
+        """, """
+        public struct Accumulator
+        {
+            public double {|FP0003:R|};
+        }
         """);
 }

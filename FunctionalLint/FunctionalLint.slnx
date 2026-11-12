@@ -1,9 +1,13 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/FunctionalLint.CodeFixes/FunctionalLint.CodeFixes.csproj" />
+    <Project Path="src/FunctionalLint.Package/FunctionalLint.Package.csproj" />
     <Project Path="src/FunctionalLint/FunctionalLint.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/FunctionalLint.Tests/FunctionalLint.Tests.csproj" />
+  </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/FunctionalLint.Heal/FunctionalLint.Heal.csproj" />
   </Folder>
 </Solution>

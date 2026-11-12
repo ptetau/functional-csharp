@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The functional core: parsing, validation, reports and command handling. Linted. -->
+  <PropertyGroup>
+    <TargetFramework>net11.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <Import Project="..\..\..\FunctionalLint\build\FunctionalCore.props" />
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\Functional\Functional.csproj" />
+  </ItemGroup>
+
+</Project>

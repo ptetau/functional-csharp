@@ -3,8 +3,10 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
+using System.Reflection;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Diagnostics;
 using Microsoft.CodeAnalysis.Operations;
 
@@ -23,6 +25,10 @@ namespace FunctionalLint;
 ///   FP0009  adapters must not expose legacy types
 ///   FP0010  no async void
 ///   FP0011  no side-effecting APIs (clock, random, I/O, console...)
+///   FP0012  don't throw away the result of a call that returns a new value
+///   FP0013  switches over enums, closed types and unions must stay exhaustive
+///   FP0014  records must not hold collections that compare by reference
+///   FP0015  no calls that throw (First, Parse, dictionary indexers...)
 ///
 /// Code inside an [ImperativeAdapter] type or member, or inside a namespace listed in
 /// functional_lint.legacy_namespaces, is exempt from every rule except FP0009.
@@ -44,7 +50,7 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
 
     public static readonly DiagnosticDescriptor NoMutation = Rule("FP0002",
         "Mutation is not allowed",
-        "'{0}' is changed here. Bind a new name or use a 'with' expression instead.",
+        "{0} {1}",
         "Values never change once created. Instead of 'x = x + 1' write 'var next = x + 1'. " +
         "Instead of setting a property write 'item with { Name = name }'.");
 
@@ -80,7 +86,7 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
 
     public static readonly DiagnosticDescriptor MutableSignature = Rule("FP0008",
         "Mutable collection types are not allowed in signatures",
-        "'{0}' lets callers change the collection. Use {1} instead.",
+        "{0} Use {1} instead.",
         "Signatures expose read-only or immutable collections so neither side can change what the other holds. " +
         "A code fix swaps IList, ICollection, IDictionary, ISet, List, Dictionary and HashSet for their read-only interfaces.");
 
@@ -98,9 +104,36 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
 
     public static readonly DiagnosticDescriptor ImpureApi = Rule("FP0011",
         "Side-effecting API",
-        "'{0}' has side effects. Call it from an [ImperativeAdapter], or pass the value in.",
+        "'{0}' {1}. Call it from an [ImperativeAdapter], or pass the value in.",
         "Functions that read the clock, random numbers, the console, files or the network give different answers " +
         "for the same input. Pass the value in as a parameter (e.g. 'DateTime now'), or wrap the API in an adapter.");
+
+    public static readonly DiagnosticDescriptor IgnoredResult = Rule("FP0012",
+        "Result of a pure call is ignored",
+        "'{0}' returns a new value and leaves the original unchanged. Use the result instead.",
+        "Immutable collections, strings, dates and LINQ never change what they're called on: 'list.Add(x)' returns a new list. " +
+        "Calling one as a statement does nothing, so it's almost always a bug. Assign the result: 'var updated = list.Add(x);'.");
+
+    public static readonly DiagnosticDescriptor ExhaustiveSwitch = Rule("FP0013",
+        "Switches must stay exhaustive",
+        "{0} {1}",
+        "The compiler checks that a switch expression over an enum, a closed type or a union handles every case, " +
+        "so adding a case is a compile error until each switch handles it. A catch-all arm or a switch statement turns " +
+        "that check off.");
+
+    public static readonly DiagnosticDescriptor ReferenceEqualityInRecord = Rule("FP0014",
+        "Records must not hold collections that compare by reference",
+        "'{0}' compares by reference, so equal '{1}' records won't be equal. Use {2} instead.",
+        "Records promise value equality, but ImmutableArray, arrays, lists and dictionaries compare by reference, so a record " +
+        "holding one is never equal to a copy of itself. Use a collection marked [ValueEquality] (such as ValueList<T>), " +
+        "or write the record's Equals yourself.");
+
+    public static readonly DiagnosticDescriptor ThrowingCall = Rule("FP0015",
+        "Calls that throw are not allowed",
+        "'{0}' throws when {1}. Use {2} instead.",
+        "FP0007 stops 'throw', but many library calls throw too: First on an empty sequence, Parse on bad input, a " +
+        "dictionary indexer on a missing key. Use the form that returns a value you can check, and turn failure into a " +
+        "Result or Option. Adapters may call them.");
 
     public const string HelpLinkBase = "https://github.com/ptetau/functional-csharp/blob/main/FunctionalLint/docs/rules/";
 
@@ -110,7 +143,8 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
 
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics { get; } = ImmutableArray.Create(
         NoLoops, NoMutation, NoMutableState, NoObjects, NoMutableTypes, NoDirectImperative,
-        NoThrow, MutableSignature, AdapterLeak, AsyncVoid, ImpureApi);
+        NoThrow, MutableSignature, AdapterLeak, AsyncVoid, ImpureApi, IgnoredResult, ExhaustiveSwitch,
+        ReferenceEqualityInRecord, ThrowingCall);
 
     // Configuration -----------------------------------------------------------
 
@@ -132,7 +166,26 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         ("System.Collections.Generic.Stack`1", "ImmutableStack<T>"),
         ("System.Collections.Generic.LinkedList`1", "ImmutableList<T>"),
         ("System.Collections.Concurrent.ConcurrentDictionary`2", "ImmutableDictionary<TKey, TValue>"),
-        ("System.Text.StringBuilder", "string interpolation or string.Join"),
+        ("System.Collections.Concurrent.ConcurrentQueue`1", "ImmutableQueue<T>"),
+        ("System.Collections.Concurrent.ConcurrentStack`1", "ImmutableStack<T>"),
+        ("System.Collections.Concurrent.ConcurrentBag`1", "ImmutableArray<T>"),
+        ("System.Collections.ObjectModel.Collection`1", "ImmutableArray<T>"),
+        ("System.Collections.ObjectModel.ObservableCollection`1", "ImmutableArray<T>"),
+        ("System.Collections.ArrayList", "ImmutableArray<T>"),
+        ("System.Collections.Hashtable", "ImmutableDictionary<TKey, TValue>"),
+        ("System.Text.StringBuilder", "string interpolation, string.Join or string.Concat"),
+        ("System.IO.MemoryStream", "a byte array built with LINQ, or an [ImperativeAdapter]"),
+        ("System.IO.StringWriter", "string interpolation or string.Join"),
+        ("System.Text.Json.Utf8JsonWriter", "JsonSerializer.Serialize, or an [ImperativeAdapter]"),
+    };
+
+    // Signatures get the read-only interface first: it's what the FP0008 fix writes, and callers holding
+    // a list can still pass it.
+    private static readonly (string MetadataName, string Alternative)[] SignatureAlternatives =
+    {
+        ("System.Collections.Generic.List`1", "IReadOnlyList<T> or ImmutableArray<T>"),
+        ("System.Collections.Generic.Dictionary`2", "IReadOnlyDictionary<TKey, TValue>"),
+        ("System.Collections.Generic.HashSet`1", "IReadOnlySet<T> or ImmutableHashSet<T>"),
     };
 
     private static readonly (string MetadataName, string Alternative)[] MutableInterfaces =
@@ -161,7 +214,19 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         "System.Net.Http.HttpClient",
         "System.Diagnostics.Process", "System.Diagnostics.Stopwatch",
         "System.Threading.Thread.Sleep", "System.Threading.Tasks.Task.Delay",
+        "System.Globalization.CultureInfo.CurrentCulture", "System.Globalization.CultureInfo.CurrentUICulture",
+        "System.TimeZoneInfo.Local", "System.IO.Path.GetFullPath", "System.IO.Path.GetTempPath",
+        "System.Linq.ParallelEnumerable", "System.Threading.Tasks.Parallel",
     };
+
+    // Not side effects as such, but still hidden inputs: the answer depends on where or how the code runs.
+    private static readonly string[] AmbientApis =
+    {
+        "System.Environment", "System.Globalization.CultureInfo.CurrentCulture", "System.Globalization.CultureInfo.CurrentUICulture",
+        "System.TimeZoneInfo.Local", "System.IO.Path.GetFullPath", "System.IO.Path.GetTempPath",
+    };
+
+    private static readonly string[] NondeterministicApis = { "System.Linq.ParallelEnumerable", "System.Threading.Tasks.Parallel" };
 
     private static readonly OperationKind[] ReferenceKinds =
     {
@@ -182,6 +247,12 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
 
         // GuardOp / GuardSymbol skip adapters and legacy namespaces.
         context.RegisterOperationAction(GuardOp(AnalyzeLoop), OperationKind.Loop);
+        context.RegisterOperationAction(GuardOp(AnalyzeGoto), OperationKind.Branch);
+        context.RegisterOperationAction(GuardOp(AnalyzeLoopCall), OperationKind.Invocation);
+        context.RegisterOperationAction(GuardOp(AnalyzeRefArgument), OperationKind.Argument);
+        context.RegisterOperationAction(GuardOp(AnalyzeMutatingCall), OperationKind.Invocation);
+        context.RegisterOperationAction(GuardOp(AnalyzeThrowingCall), OperationKind.Invocation, OperationKind.PropertyReference);
+        context.RegisterSymbolAction(GuardSymbol(AnalyzeRecordEquality), SymbolKind.NamedType);
         context.RegisterOperationAction(GuardOp(AnalyzeAssignment),
             OperationKind.SimpleAssignment,
             OperationKind.CompoundAssignment,
@@ -191,6 +262,9 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         context.RegisterOperationAction(GuardOp(AnalyzeEventAssignment), OperationKind.EventAssignment);
         context.RegisterOperationAction(GuardOp(AnalyzeBoundary), ReferenceKinds);
         context.RegisterOperationAction(GuardOp(AnalyzeThrow), OperationKind.Throw);
+        context.RegisterOperationAction(GuardOp(AnalyzeIgnoredResult), OperationKind.ExpressionStatement);
+        context.RegisterOperationAction(GuardOp(AnalyzeSwitchExpression), OperationKind.SwitchExpression);
+        context.RegisterOperationAction(GuardOp(AnalyzeSwitchStatement), OperationKind.Switch);
         context.RegisterOperationAction(GuardOp(AnalyzeAsyncVoidFunction),
             OperationKind.AnonymousFunction, OperationKind.LocalFunction);
 
@@ -206,12 +280,17 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         {
             var compilation = start.Compilation;
             var mutableTypes = Resolve(compilation, MutableTypes);
-            var inSignatures = Resolve(compilation, MutableTypes.Concat(MutableInterfaces));
+            var inSignatures = Resolve(compilation, MutableTypes.Concat(MutableInterfaces).Concat(SignatureAlternatives));
+            var mutableInterfaces = Resolve(compilation, MutableInterfaces);
             var impureByConfig = new ConcurrentDictionary<string, ImpureApis>(StringComparer.Ordinal);
 
             start.RegisterOperationAction(
                 GuardOp(ctx => AnalyzeCreation(ctx, mutableTypes)),
                 OperationKind.ObjectCreation, OperationKind.CollectionExpression, OperationKind.Invocation);
+
+            start.RegisterOperationAction(
+                GuardOp(ctx => AnalyzeLocalType(ctx, mutableInterfaces)),
+                OperationKind.VariableDeclaration);
 
             start.RegisterSymbolAction(
                 GuardSymbol(ctx => AnalyzeSignature(ctx, inSignatures)),
@@ -237,7 +316,44 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         ctx.ReportDiagnostic(Diagnostic.Create(NoLoops, keyword.GetLocation(), keyword.Text));
     }
 
+    private static void AnalyzeGoto(OperationAnalysisContext ctx)
+    {
+        if (ctx.Operation is not IBranchOperation { BranchKind: BranchKind.GoTo } op) return;
+        var keyword = op.Syntax.GetFirstToken();
+        ctx.ReportDiagnostic(Diagnostic.Create(NoLoops, keyword.GetLocation(), keyword.Text));
+    }
+
+    // `xs.ForEach(x => ...)` (List, ImmutableList, Array, Parallel) is a loop written as a method call.
+    private static void AnalyzeLoopCall(OperationAnalysisContext ctx)
+    {
+        var op = (IInvocationOperation)ctx.Operation;
+        if (op.TargetMethod.Name != "ForEach" || op.TargetMethod.Locations.Any(l => l.IsInSource)) return;
+        if (!op.TargetMethod.Parameters.Any(p => p.Type.TypeKind == TypeKind.Delegate)) return;
+
+        var name = op.Syntax is InvocationExpressionSyntax { Expression: MemberAccessExpressionSyntax access } ? access.Name : op.Syntax;
+        ctx.ReportDiagnostic(Diagnostic.Create(NoLoops, name.GetLocation(), "ForEach"));
+    }
+
     // FP0002 Mutation ---------------------------------------------------------
+
+    private const string NewNameRemedy = "Bind a new name or use a 'with' expression instead.";
+
+    // A loop's own variables (`i++`, `total += x`) are reported once, as FP0001 on the loop: rewriting the loop
+    // removes them, and "bind a new name" is the wrong advice inside a loop.
+    private static bool IsInsideLoop(IOperation op)
+    {
+        for (var current = op.Parent; current is not null; current = current.Parent)
+            if (current is ILoopOperation) return true;
+        return false;
+    }
+
+    private static void ReportChange(OperationAnalysisContext ctx, SyntaxNode at, IOperation target)
+    {
+        var (what, remedy) = target is IArrayElementReferenceOperation
+            ? ($"'{target.Syntax}' is changed here.", "Build a new array with Select(...).ToArray() instead.")
+            : ($"'{target.Syntax}' is changed here.", NewNameRemedy);
+        Report(ctx, NoMutation, at, what, remedy);
+    }
 
     private static void AnalyzeAssignment(OperationAnalysisContext ctx)
     {
@@ -255,20 +371,64 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
 
         // Constructors and init accessors may set their own type's members once.
         if (IsInitialisingOwnMember(op.Target, ctx.ContainingSymbol)) return;
+        if (IsInsideLoop(op)) return;
 
-        Report(ctx, NoMutation, op.Syntax, op.Target.Syntax.ToString());
+        ReportChange(ctx, op.Syntax, op.Target);
     }
 
     private static void AnalyzeIncrement(OperationAnalysisContext ctx)
     {
         var op = (IIncrementOrDecrementOperation)ctx.Operation;
-        Report(ctx, NoMutation, op.Syntax, op.Target.Syntax.ToString());
+        if (IsInsideLoop(op)) return;
+        ReportChange(ctx, op.Syntax, op.Target);
     }
 
     private static void AnalyzeEventAssignment(OperationAnalysisContext ctx)
     {
         var op = (IEventAssignmentOperation)ctx.Operation;
-        Report(ctx, NoMutation, op.Syntax, op.EventReference.Syntax.ToString());
+        Report(ctx, NoMutation, op.Syntax, $"'{op.EventReference.Syntax}' is changed here.", NewNameRemedy);
+    }
+
+    // `int.TryParse(s, out existing)` and `Interlocked.Increment(ref n)` overwrite a variable that already exists.
+    // `out var n` and `out _` bind a new name, and passing your own out parameter on is how TryX methods chain.
+    private static void AnalyzeRefArgument(OperationAnalysisContext ctx)
+    {
+        var op = (IArgumentOperation)ctx.Operation;
+        if (op.Parameter is not { RefKind: RefKind.Out or RefKind.Ref } parameter) return;
+        // Only a variable you can see can be overwritten. (`string.Create(culture, $"...")` passes a
+        // compiler-made interpolation handler by ref: nothing of yours changes.)
+        if (op.Value is not (ILocalReferenceOperation or IFieldReferenceOperation or IParameterReferenceOperation
+            or IArrayElementReferenceOperation)) return;
+        if (IsFreshBinding(op.Value)) return;
+        if (op.Value is IParameterReferenceOperation { Parameter.RefKind: RefKind.Out }) return;
+        if (IsInsideLoop(op)) return;
+
+        var remedy = parameter.RefKind == RefKind.Out
+            ? "Use 'out var' to bind a new name instead."
+            : "Pass the value in and use the result instead.";
+        Report(ctx, NoMutation, op.Syntax, $"'{op.Value.Syntax}' is changed here.", remedy);
+    }
+
+    // Library calls that change their argument in place, or wrap a mutable array as an "immutable" one.
+    private static readonly string[] MutatingApis =
+    {
+        "System.Array.Fill", "System.Array.Clear", "System.Array.Sort", "System.Array.Reverse", "System.Array.Copy",
+        "System.Array.Resize", "System.Array.ConstrainedCopy",
+        "System.Span<T>.Fill", "System.Span<T>.Clear", "System.Span<T>.CopyTo", "System.Span<T>.TryCopyTo",
+        "System.MemoryExtensions.Sort", "System.MemoryExtensions.Reverse",
+        "System.Runtime.InteropServices.ImmutableCollectionsMarshal.AsImmutableArray",
+    };
+
+    private static void AnalyzeMutatingCall(OperationAnalysisContext ctx)
+    {
+        var method = ((IInvocationOperation)ctx.Operation).TargetMethod;
+        var key = method.ContainingType.OriginalDefinition.ToDisplayString() + "." + method.Name;
+        if (!MutatingApis.Contains(key)) return;
+
+        var (what, remedy) = method.ContainingType.Name == "ImmutableCollectionsMarshal"
+            ? ($"'{method.Name}' makes an 'immutable' array that its owner can still change.", "Use ToImmutableArray() instead.")
+            : ($"'{method.ContainingType.Name}.{method.Name}' changes its argument in place.", "Build a new value with LINQ instead.");
+        Report(ctx, NoMutation, ctx.Operation.Syntax, what, remedy);
     }
 
     private static bool IsFreshBinding(IOperation target) => target switch
@@ -308,6 +468,10 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
     {
         var property = (IPropertySymbol)ctx.Symbol;
         if (property.IsImplicitlyDeclared || property.SetMethod is null || property.SetMethod.IsInitOnly) return;
+
+        // `record struct P(int X)`: reported once, on the struct. Declaring it readonly fixes every property.
+        if (property.ContainingType is { TypeKind: TypeKind.Struct, IsRecord: true, IsReadOnly: false }
+            && property.DeclaringSyntaxReferences.Any(r => r.GetSyntax() is ParameterSyntax)) return;
 
         ctx.ReportDiagnostic(Diagnostic.Create(
             NoMutableState,
@@ -359,22 +523,66 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         ["ToList"] = "ToImmutableArray() or ToImmutableList()",
         ["ToDictionary"] = "ToImmutableDictionary()",
         ["ToHashSet"] = "ToImmutableHashSet()",
+        ["CreateBuilder"] = "Select(...).ToImmutableArray()",
+        ["ToBuilder"] = "the immutable collection's own Add/SetItem/Remove, using each result",
     };
 
-    private static void AnalyzeCreation(OperationAnalysisContext ctx, Dictionary<ISymbol, string> banned)
+    private static void AnalyzeCreation(OperationAnalysisContext ctx, Dictionary<ISymbol, string> known)
     {
         var type = ctx.Operation.Type;
-        if (type is null || !banned.TryGetValue(type.OriginalDefinition, out var alternative)) return;
+        if (type is null || MutableAlternative(type, known) is not { } alternative) return;
 
         if (ctx.Operation is IInvocationOperation invocation)
         {
+            var method = invocation.TargetMethod;
             // Methods written in this compilation are already checked by FP0008 (their signature)
             // or FP0006 (legacy). Here we only want library calls such as Enumerable.ToList.
-            if (invocation.TargetMethod.Locations.Any(l => l.IsInSource)) return;
-            if (MutableBuilders.TryGetValue(invocation.TargetMethod.Name, out var builder)) alternative = builder;
+            if (method.Locations.Any(l => l.IsInSource)) return;
+            // `sb.Append(x)` returns the builder it was called on: that builder was reported where it was made.
+            if (!method.IsStatic && !method.IsExtensionMethod
+                && SymbolEqualityComparer.Default.Equals(method.ContainingType.OriginalDefinition, type.OriginalDefinition)) return;
+            if (MutableBuilders.TryGetValue(method.Name, out var builder)) alternative = builder;
         }
 
         Report(ctx, NoMutableTypes, ctx.Operation.Syntax, Display(type), alternative);
+    }
+
+    private static readonly string[] CollectionNamespaces =
+    {
+        "System.Collections", "System.Collections.Generic", "System.Collections.Concurrent", "System.Collections.ObjectModel",
+    };
+
+    // What to use instead of a mutable type, or null if it isn't one. Known types have tailored advice. Beyond those,
+    // anything in the standard collection namespaces that can be added to is mutable, and so are the immutable
+    // collections' builders (ImmutableArray<T>.Builder and friends).
+    private static string? MutableAlternative(ITypeSymbol type, Dictionary<ISymbol, string> known)
+    {
+        if (known.TryGetValue(type.OriginalDefinition, out var alternative)) return alternative;
+        if (type is not INamedTypeSymbol named || type.TypeKind == TypeKind.Interface) return null;
+
+        if (named.Name == "Builder" && named.ContainingType?.ContainingNamespace?.ToDisplayString() == "System.Collections.Immutable")
+            return "Select(...).ToImmutableArray()";
+
+        var ns = named.ContainingNamespace?.ToDisplayString() ?? "";
+        if (!CollectionNamespaces.Contains(ns) || named.Name.StartsWith("ReadOnly", StringComparison.Ordinal)) return null;
+
+        var addable = named.AllInterfaces.Any(i =>
+            i.OriginalDefinition.ToDisplayString() is "System.Collections.Generic.ICollection<T>" or "System.Collections.IList" or "System.Collections.IDictionary");
+        return addable ? "a type from System.Collections.Immutable" : null;
+    }
+
+    // `IList<int> xs = ...` declares a local that can be changed. Concrete types such as List<T> are
+    // caught where they're created (above), so only the interfaces need checking here.
+    private static void AnalyzeLocalType(OperationAnalysisContext ctx, Dictionary<ISymbol, string> banned)
+    {
+        var op = (IVariableDeclarationOperation)ctx.Operation;
+        if (op.Syntax is not VariableDeclarationSyntax { Type: { IsVar: false } typeSyntax }) return;
+        if (op.Declarators.FirstOrDefault()?.Symbol.Type is not { } type) return;
+
+        var hit = TypesIn(type).FirstOrDefault(t => banned.ContainsKey(t.OriginalDefinition));
+        if (hit is null) return;
+
+        Report(ctx, NoMutableTypes, typeSyntax, Display(hit), banned[hit.OriginalDefinition]);
     }
 
     // FP0006 Calling legacy code directly -------------------------------------
@@ -411,8 +619,10 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
             var hit = TypesIn(type).FirstOrDefault(t => banned.ContainsKey(t.OriginalDefinition));
             if (hit is null) continue;
 
-            ctx.ReportDiagnostic(Diagnostic.Create(
-                MutableSignature, location, Display(hit), banned[hit.OriginalDefinition]));
+            var problem = symbol is IFieldSymbol
+                ? $"'{Display(hit)}' in a field can be changed by any code that can see it."
+                : $"'{Display(hit)}' lets callers change the collection.";
+            ctx.ReportDiagnostic(Diagnostic.Create(MutableSignature, location, problem, banned[hit.OriginalDefinition]));
         }
     }
 
@@ -464,6 +674,318 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         ctx.ReportDiagnostic(Diagnostic.Create(AsyncVoid, location, isLambda ? "lambda" : method.Name));
     }
 
+    // FP0013 Exhaustive switches ---------------------------------------------
+
+    private static void AnalyzeSwitchExpression(OperationAnalysisContext ctx)
+    {
+        var op = (ISwitchExpressionOperation)ctx.Operation;
+        if (op.Value.Type is not { } type || CheckedKind(type) is null) return;
+
+        // An unguarded arm that matches anything: `_`, `var x`, or the input's own type.
+        var catchAll = op.Arms.FirstOrDefault(arm => arm.Guard is null && arm.Pattern switch
+        {
+            IDiscardPatternOperation => true,
+            IDeclarationPatternOperation { MatchesNull: true } => true,
+            IDeclarationPatternOperation declaration => SymbolEqualityComparer.Default.Equals(declaration.MatchedType, type),
+            ITypePatternOperation typePattern => SymbolEqualityComparer.Default.Equals(typePattern.MatchedType, type),
+            _ => false,
+        });
+        if (catchAll is null) return;
+
+        Report(ctx, ExhaustiveSwitch, catchAll.Pattern.Syntax,
+            $"'{catchAll.Pattern.Syntax}' matches every case of '{Display(type)}' that isn't listed, so a new case won't be an error.",
+            "List each case instead.");
+    }
+
+    private static void AnalyzeSwitchStatement(OperationAnalysisContext ctx)
+    {
+        var op = (ISwitchOperation)ctx.Operation;
+        if (op.Value.Type is not { } type || CheckedKind(type) is not { } kind) return;
+
+        var keyword = op.Syntax.GetFirstToken();
+        ctx.ReportDiagnostic(Diagnostic.Create(ExhaustiveSwitch, keyword.GetLocation(),
+            $"A switch statement over the {kind} '{Display(type)}' isn't checked for missing cases.",
+            "Use a switch expression instead."));
+    }
+
+    // Types whose switch expressions the compiler checks for missing cases, or null.
+    private static string? CheckedKind(ITypeSymbol type) => type switch
+    {
+        INamedTypeSymbol { TypeKind: TypeKind.Enum } e when !e.GetAttributes().Any(a => a.AttributeClass?.Name == "FlagsAttribute") => "enum",
+        _ when type.AllInterfaces.Any(i => i.ToDisplayString() == "System.Runtime.CompilerServices.IUnion") => "union",
+        _ when IsClosed(type) => "closed type",
+        _ => null,
+    };
+
+    // C# 15 `closed` types. In source the modifier is visible in the syntax. For compiled types only the compiler
+    // knows, through ITypeSymbol.IsClosed, which is still marked experimental. This analyzer is built against an
+    // older Roslyn, so it reads that property by reflection and quietly does without it if it ever goes away.
+    private static readonly PropertyInfo? IsClosedProperty =
+        typeof(ITypeSymbol).GetRuntimeProperties().FirstOrDefault(p => p.Name == "IsClosed" && p.PropertyType == typeof(bool));
+
+    private static bool IsClosed(ITypeSymbol type)
+    {
+        var definition = type.OriginalDefinition;
+        if (definition.DeclaringSyntaxReferences.Any(r =>
+                r.GetSyntax() is TypeDeclarationSyntax declaration && declaration.Modifiers.Any(m => m.Text == "closed")))
+            return true;
+
+        try
+        {
+            return IsClosedProperty?.GetValue(definition) is true;
+        }
+        catch (TargetInvocationException)
+        {
+            return false;
+        }
+    }
+
+    // FP0014 Collections in records ---------------------------------------------
+
+    private static void AnalyzeRecordEquality(SymbolAnalysisContext ctx)
+    {
+        var type = (INamedTypeSymbol)ctx.Symbol;
+        if (!type.IsRecord || type.IsImplicitlyDeclared) return;
+
+        // A private nested record (typically a fold's running state) is only compared where you can see it.
+        // Leave it alone: switching it to an array-backed ValueList can make the fold O(n²).
+        if (type.DeclaredAccessibility == Accessibility.Private && type.ContainingType is not null) return;
+
+        // A record that writes its own Equals has decided what equality means.
+        if (type.GetMembers("Equals").OfType<IMethodSymbol>().Any(m =>
+                !m.IsImplicitlyDeclared && m.Parameters.Length == 1
+                && SymbolEqualityComparer.Default.Equals(m.Parameters[0].Type.OriginalDefinition, type.OriginalDefinition)))
+            return;
+
+        // Only what the record stores takes part in its equality: fields, and properties with a backing field
+        // (auto-properties, positional parameters, `field`). A computed property like `Count => Items.Length` doesn't.
+        var backed = type.GetMembers().OfType<IFieldSymbol>()
+            .Select(f => f.AssociatedSymbol).Where(s => s is not null).ToImmutableHashSet(SymbolEqualityComparer.Default);
+
+        var members = type.GetMembers()
+            .Where(m => !m.IsStatic && !m.IsImplicitlyDeclared && (m is not IPropertySymbol || backed.Contains(m)))
+            .Select(m => m switch
+            {
+                IPropertySymbol p => (Symbol: (ISymbol)p, p.Type),
+                IFieldSymbol f => (Symbol: f, f.Type),
+                _ => (Symbol: m, Type: (ITypeSymbol?)null),
+            })
+            .Where(m => m.Type is not null && ComparesByReference(m.Type));
+
+        foreach (var (member, memberType) in members)
+        {
+            var isMap = memberType!.AllInterfaces.Concat(memberType is INamedTypeSymbol n ? [n] : [])
+                .Any(i => i.OriginalDefinition.ToDisplayString() is "System.Collections.Generic.IReadOnlyDictionary<TKey, TValue>"
+                    or "System.Collections.Generic.IDictionary<TKey, TValue>");
+            ctx.ReportDiagnostic(Diagnostic.Create(ReferenceEqualityInRecord, member.Locations[0], Display(memberType), type.Name,
+                isMap ? "ValueMap<TKey, TValue>" : "ValueList<T>"));
+        }
+    }
+
+    // Collections compare by reference unless their type says otherwise with [ValueEquality] (matched by name,
+    // like [ImperativeAdapter]). Strings are sequences too, but compare by value.
+    private static bool ComparesByReference(ITypeSymbol type) =>
+        type.SpecialType != SpecialType.System_String
+        && (type is IArrayTypeSymbol
+            || type.SpecialType == SpecialType.System_Collections_IEnumerable
+            || type.AllInterfaces.Any(i => i.SpecialType == SpecialType.System_Collections_IEnumerable))
+        && !type.GetAttributes().Any(a => a.AttributeClass?.Name == "ValueEqualityAttribute");
+
+    // FP0015 Calls that throw --------------------------------------------------
+
+    private static void AnalyzeThrowingCall(OperationAnalysisContext ctx)
+    {
+        var (name, when, instead) = ctx.Operation switch
+        {
+            IInvocationOperation invocation => ThrowingMethod(invocation),
+            IPropertyReferenceOperation property => ThrowingIndexer(property),
+            _ => default,
+        };
+        if (name is null) return;
+        Report(ctx, ThrowingCall, ctx.Operation.Syntax, name, when!, instead!);
+    }
+
+    private static (string? Name, string? When, string? Instead) ThrowingMethod(IInvocationOperation op)
+    {
+        var method = op.TargetMethod;
+        if (method.Locations.Any(l => l.IsInSource)) return default;
+
+        var owner = method.ContainingType.OriginalDefinition.ToDisplayString();
+        var name = method.Name;
+        var returnsPlainValue = method.ReturnType is { IsValueType: true } r && r.OriginalDefinition.SpecialType != SpecialType.System_Nullable_T;
+
+        if (owner is "System.Linq.Enumerable" or "System.Linq.ImmutableArrayExtensions" or "System.Linq.Queryable")
+        {
+            return name switch
+            {
+                "First" when (!IsNonEmpty(op) || method.Parameters.Length > 1) && !IsUnboundedSearch(op) =>
+                    (name, "nothing matches", "FirstOrDefault, or a list pattern such as 'is [var first, ..]'"),
+                "Last" when !IsNonEmpty(op) || method.Parameters.Length > 1 =>
+                    (name, "nothing matches", "LastOrDefault, or a list pattern such as 'is [.., var last]'"),
+                "Single" or "SingleOrDefault" => (name, "there's more than one match", "a list pattern such as 'is [var only]'"),
+                "ElementAt" => (name, "the index is out of range", "ElementAtOrDefault"),
+                "Min" or "Max" or "Average" when returnsPlainValue && !IsNonEmpty(op) =>
+                    (name, "the sequence is empty", "DefaultIfEmpty(fallback) before it"),
+                "Aggregate" when method.Parameters.Length == 2 && !IsNonEmpty(op) => (name, "the sequence is empty", "Aggregate with a seed"),
+                "ToDictionary" when !HasUniqueKeys(op) => (name, "two items have the same key", "GroupBy on the key first, or ToLookup"),
+                _ => default,
+            };
+        }
+
+        if (owner is "System.Collections.Immutable.ImmutableDictionary" or "System.Collections.Immutable.ImmutableSortedDictionary"
+            && name.StartsWith("ToImmutable", StringComparison.Ordinal) && !HasUniqueKeys(op))
+            return (name, "two items have the same key", "GroupBy on the key first, or ToLookup");
+
+        if (owner is "System.Collections.Immutable.ImmutableDictionary<TKey, TValue>"
+                or "System.Collections.Immutable.ImmutableSortedDictionary<TKey, TValue>" && name == "Add"
+            && !(op.Instance is { } dictionary && op.Arguments.FirstOrDefault() is { } addedKey
+                 && IsGuardedByContainsKey(op, dictionary, addedKey.Value, keyPresent: false)))
+            return ($"{method.ContainingType.Name}.Add", "the key is already there with a different value", "SetItem");
+
+        if (method.IsStatic && name is "Parse" or "ParseExact"
+            && method.ContainingType.ContainingNamespace?.ToDisplayString() == "System")
+            return ($"{Display(method.ContainingType)}.{name}", "the text isn't valid", $"{Display(method.ContainingType)}.TryParse");
+
+        if (owner == "System.Convert" && name.StartsWith("To", StringComparison.Ordinal)
+            && method.Parameters.FirstOrDefault()?.Type.SpecialType == SpecialType.System_String)
+            return ($"Convert.{name}", "the text isn't valid", "the target type's TryParse");
+
+        return default;
+    }
+
+    // `d.ContainsKey(k) ? d[k] : 0` and `d.ContainsKey(k) ? d : d.Add(k, v)` can't throw: the check guards the call.
+    // Recognised in ?: and if (both are conditional operations), and on the right of && and ||.
+    // The dictionary and key are matched by their source text.
+    private static bool IsGuardedByContainsKey(IOperation op, IOperation dictionary, IOperation key, bool keyPresent)
+    {
+        bool Checks(IOperation condition, bool whenTrue) => condition switch
+        {
+            IUnaryOperation { OperatorKind: UnaryOperatorKind.Not } not => Checks(not.Operand, !whenTrue),
+            IInvocationOperation { TargetMethod.Name: "ContainsKey" } contains =>
+                whenTrue == keyPresent
+                && contains.Instance?.Syntax.ToString() == dictionary.Syntax.ToString()
+                && contains.Arguments.FirstOrDefault()?.Value.Syntax.ToString() == key.Syntax.ToString(),
+            _ => false,
+        };
+
+        for (IOperation child = op, parent = op.Parent!; parent is not null; child = parent, parent = parent.Parent!)
+        {
+            var guarded = parent switch
+            {
+                IConditionalOperation c when c.WhenTrue == child => Checks(c.Condition, whenTrue: true),
+                IConditionalOperation c when c.WhenFalse == child => Checks(c.Condition, whenTrue: false),
+                IBinaryOperation { OperatorKind: BinaryOperatorKind.ConditionalAnd } b when b.RightOperand == child =>
+                    Checks(b.LeftOperand, whenTrue: true),
+                IBinaryOperation { OperatorKind: BinaryOperatorKind.ConditionalOr } b when b.RightOperand == child =>
+                    Checks(b.LeftOperand, whenTrue: false),
+                _ => false,
+            };
+            if (guarded) return true;
+        }
+        return false;
+    }
+
+    // `xs.GroupBy(k).ToDictionary(g => g.Key, ...)` can't have duplicate keys, and `xs.DefaultIfEmpty(0).Max()`
+    // can't be empty: FP0015's own advice has been followed.
+    private static bool HasUniqueKeys(IInvocationOperation op) => SourceIs(op, "GroupBy", "Distinct", "DistinctBy", "ToLookup");
+
+    // `Enumerable.Range(n, int.MaxValue - n).First(...)` (or Repeat) is a search that runs until it finds something:
+    // "the first free slug suffix". It can't run out in practice, so it isn't reported.
+    private static bool IsUnboundedSearch(IInvocationOperation op)
+    {
+        var source = op.Arguments.FirstOrDefault()?.Value;
+        while (source is IConversionOperation conversion) source = conversion.Operand;
+        while (source is IInvocationOperation { TargetMethod.Name: "Select" or "Where" } step)
+        {
+            source = step.Arguments.FirstOrDefault()?.Value;
+            while (source is IConversionOperation inner) source = inner.Operand;
+        }
+
+        return source is IInvocationOperation generator
+            && (generator.TargetMethod is { Name: "From", ContainingType.Name: "Sequences" }
+                || generator.TargetMethod is { Name: "Range" or "Repeat", ContainingType.Name: "Enumerable" }
+                   && generator.Arguments.Length == 2
+                   && generator.Arguments[1].Value.Syntax.ToString().Contains("int.MaxValue"));
+    }
+
+    // Sequences that can't be empty: a group from GroupBy, or anything after Append, Prepend or DefaultIfEmpty.
+    private static bool IsNonEmpty(IInvocationOperation op)
+    {
+        var source = op.Arguments.FirstOrDefault()?.Value;
+        while (source is IConversionOperation conversion) source = conversion.Operand;
+        return SourceIs(op, "DefaultIfEmpty", "Append", "Prepend")
+            || source?.Type is { } type && type.AllInterfaces.Concat(type is INamedTypeSymbol n ? [n] : [])
+                .Any(i => i.OriginalDefinition.ToDisplayString() == "System.Linq.IGrouping<TKey, TElement>");
+    }
+
+    private static bool SourceIs(IInvocationOperation op, params string[] methods)
+    {
+        var source = op.Arguments.FirstOrDefault()?.Value;
+        while (source is IConversionOperation conversion) source = conversion.Operand;
+        return source is IInvocationOperation call && methods.Contains(call.TargetMethod.Name);
+    }
+
+    // `prices["apple"]` on any dictionary throws when the key is missing. Writing to one is FP0002/FP0005's business.
+    private static (string? Name, string? When, string? Instead) ThrowingIndexer(IPropertyReferenceOperation op)
+    {
+        if (!op.Property.IsIndexer) return default;
+        if (op.Parent is IAssignmentOperation assignment && assignment.Target == op) return default;
+
+        // Regex's GroupCollection returns an unsuccessful Group for a missing name instead of throwing.
+        if (op.Property.ContainingType.ToDisplayString() == "System.Text.RegularExpressions.GroupCollection") return default;
+
+        // A key lookup: the indexer takes the dictionary's key type. (An int indexer on a string-keyed collection
+        // is a list indexer, which this rule leaves alone.)
+        var isKeyLookup = op.Property.ContainingType.AllInterfaces.Concat([op.Property.ContainingType])
+            .Where(i => i.OriginalDefinition.ToDisplayString() is "System.Collections.Generic.IReadOnlyDictionary<TKey, TValue>"
+                or "System.Collections.Generic.IDictionary<TKey, TValue>")
+            .Any(i => op.Property.Parameters.Length == 1
+                && SymbolEqualityComparer.Default.Equals(op.Property.Parameters[0].Type, i.TypeArguments[0]));
+        if (isKeyLookup && op.Instance is { } dictionary && op.Arguments.FirstOrDefault() is { } key
+            && IsGuardedByContainsKey(op, dictionary, key.Value, keyPresent: true)) return default;
+
+        return isKeyLookup
+            ? (op.Syntax.ToString(), "the key is missing", "TryGetValue or GetValueOrDefault")
+            : default;
+    }
+
+    // FP0012 Ignored results -------------------------------------------------
+
+    // Types whose methods never change the value they're called on.
+    private static readonly string[] PureValueTypes =
+    {
+        "System.DateTime", "System.DateTimeOffset", "System.TimeSpan", "System.DateOnly", "System.TimeOnly",
+    };
+
+    private static void AnalyzeIgnoredResult(OperationAnalysisContext ctx)
+    {
+        var statement = (IExpressionStatementOperation)ctx.Operation;
+        if (statement.Operation is not IInvocationOperation { TargetMethod: { ReturnsVoid: false } method } invocation) return;
+        if (!ReturnsNewValue(method)) return;
+
+        Report(ctx, IgnoredResult, invocation.Syntax, $"{method.ContainingType.Name}.{method.Name}");
+    }
+
+    private static bool ReturnsNewValue(IMethodSymbol method)
+    {
+        var type = method.ContainingType;
+        var ns = type.ContainingNamespace?.ToDisplayString();
+
+        // ImmutableArray<T>.Builder and friends are mutable, and e.g. Remove returns a bool you may not need.
+        // ImmutableInterlocked changes the variable passed by ref, so its result is optional too.
+        if (ns == "System.Collections.Immutable") return type.Name is not ("Builder" or "ImmutableInterlocked");
+        if (ns == "System.Linq") return type.Name is "Enumerable" or "ImmutableArrayExtensions";
+        if (type.SpecialType == SpecialType.System_String) return true;
+        if (type.ToDisplayString() == "System.Math") return true;
+
+        // Your own records and readonly structs (and ones from libraries): their methods return new values.
+        // A method with out or ref parameters hands back results that way, so its return value may be optional.
+        if ((type.IsRecord || (type.IsValueType && type.IsReadOnly)) && !method.IsStatic
+            && method.Parameters.All(p => p.RefKind is RefKind.None or RefKind.In)) return true;
+
+        return PureValueTypes.Contains(type.OriginalDefinition.ToDisplayString());
+    }
+
     // FP0011 Side-effecting APIs ----------------------------------------------
 
     private static void AnalyzeImpure(OperationAnalysisContext ctx, ImpureApis apis)
@@ -472,7 +994,12 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         if (member is null || type is null || !apis.Contains(member, type)) return;
 
         var isWholeType = member is INamedTypeSymbol || member is IMethodSymbol { MethodKind: MethodKind.Constructor };
-        Report(ctx, ImpureApi, ctx.Operation.Syntax, isWholeType ? type.Name : $"{type.Name}.{member.Name}");
+        var typeName = type.OriginalDefinition.ToDisplayString();
+        bool In(string[] list) => list.Contains(typeName) || list.Contains(typeName + "." + member.Name);
+        var why = In(AmbientApis) ? "depends on the machine it runs on"
+            : In(NondeterministicApis) ? "runs work in an unpredictable order"
+            : "has side effects";
+        Report(ctx, ImpureApi, ctx.Operation.Syntax, isWholeType ? type.Name : $"{type.Name}.{member.Name}", why);
     }
 
     private sealed class ImpureApis
@@ -632,7 +1159,13 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         _ => false,
     };
 
-    private static string Display(ITypeSymbol type) => type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
+    // `List<int>`, `int`, and nested types with their container: `ImmutableArray<int>.Builder`, not `Builder`.
+    private static readonly SymbolDisplayFormat TypeFormat = new(
+        typeQualificationStyle: SymbolDisplayTypeQualificationStyle.NameAndContainingTypes,
+        genericsOptions: SymbolDisplayGenericsOptions.IncludeTypeParameters,
+        miscellaneousOptions: SymbolDisplayMiscellaneousOptions.UseSpecialTypes | SymbolDisplayMiscellaneousOptions.EscapeKeywordIdentifiers);
+
+    private static string Display(ITypeSymbol type) => type.ToDisplayString(TypeFormat);
 
     private static void Report(OperationAnalysisContext ctx, DiagnosticDescriptor rule, SyntaxNode node, params object[] args) =>
         ctx.ReportDiagnostic(Diagnostic.Create(rule, node.GetLocation(), args));

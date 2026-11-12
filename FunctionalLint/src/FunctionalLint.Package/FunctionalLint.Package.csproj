@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Builds the FunctionalLint NuGet package: the analyzer and its code fixes under analyzers/dotnet/cs,
+    plus build/FunctionalLint.props with the compiler settings a functional core needs.
+
+      dotnet pack src/FunctionalLint.Package -c Release -o artifacts
+  -->
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <PackageId>FunctionalLint</PackageId>
+    <Version>0.3.0</Version>
+    <Description>Roslyn analyzer and code fixes that keep a C# project to a strict functional subset: no loops, mutation, classes, throws or side effects.</Description>
+    <PackageTags>roslyn;analyzer;functional;immutability</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <DevelopmentDependency>true</DevelopmentDependency>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
+    <!-- An analyzer package has no lib/ folder on purpose. -->
+    <NoWarn>$(NoWarn);NU5128</NoWarn>
+    <TargetsForTfmSpecificContentInPackage>$(TargetsForTfmSpecificContentInPackage);AddAnalyzersToPackage</TargetsForTfmSpecificContentInPackage>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\FunctionalLint\FunctionalLint.csproj" />
+    <ProjectReference Include="..\FunctionalLint.CodeFixes\FunctionalLint.CodeFixes.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\build\FunctionalCore.Settings.props" Pack="true" PackagePath="build\FunctionalLint.props" />
+    <None Include="..\..\build\FunctionalCore.globalconfig" Pack="true" PackagePath="build\FunctionalCore.globalconfig" />
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <Target Name="AddAnalyzersToPackage">
+    <ItemGroup>
+      <TfmSpecificPackageFile Include="$(OutputPath)FunctionalLint.dll" PackagePath="analyzers/dotnet/cs" />
+      <TfmSpecificPackageFile Include="$(OutputPath)FunctionalLint.CodeFixes.dll" PackagePath="analyzers/dotnet/cs" />
+    </ItemGroup>
+  </Target>
+
+</Project>

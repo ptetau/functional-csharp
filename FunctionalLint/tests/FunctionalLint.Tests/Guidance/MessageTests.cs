@@ -26,6 +26,12 @@ public class MessageTests
             "'foreach' loops are not allowed. Use LINQ, Aggregate or recursion instead." },
         { "FP0002", "static class C { static int M(int total) { total += 1; return total; } }", null,
             "'total' is changed here. Bind a new name or use a 'with' expression instead." },
+        { "FP0002", "static class C { static void M(int[] xs) { xs[0] = 1; } }", null,
+            "'xs[0]' is changed here. Build a new array with Select(...).ToArray() instead." },
+        { "FP0002", "static class C { static int M(string s) { var n = 0; int.TryParse(s, out n); return n; } }", null,
+            "'n' is changed here. Use 'out var' to bind a new name instead." },
+        { "FP0002", "static class C { static void M(int[] xs) { System.Array.Fill(xs, 0); } }", null,
+            "'Array.Fill' changes its argument in place. Build a new value with LINQ instead." },
         { "FP0003", "public record R { private int _count; }", null,
             "Field '_count' is mutable. Mark it readonly." },
         { "FP0003", "public record R { public int Count { get; set; } }", null,
@@ -40,10 +46,12 @@ public class MessageTests
             "'List<int>' is mutable. Use ImmutableArray<T> or ImmutableList<T> instead." },
         { "FP0005", "using System.Linq; static class C { static object M(int[] xs) => xs.ToList(); }", null,
             "'List<int>' is mutable. Use ToImmutableArray() or ToImmutableList() instead." },
-        { "FP0005", "using System.Linq; static class C { static object M(int[] xs) => xs.ToDictionary(x => x); }", null,
-            "'Dictionary<int, int>' is mutable. Use ToImmutableDictionary() instead." },
+        { "FP0005", "using System.Linq; static class C { static object M(int[] xs) => xs.ToHashSet(); }", null,
+            "'HashSet<int>' is mutable. Use ToImmutableHashSet() instead." },
         { "FP0005", "static class C { static object M() => new System.Text.StringBuilder(); }", null,
-            "'StringBuilder' is mutable. Use string interpolation or string.Join instead." },
+            "'StringBuilder' is mutable. Use string interpolation, string.Join or string.Concat instead." },
+        { "FP0005", "static class C { static object M() => System.Collections.Immutable.ImmutableArray.CreateBuilder<int>(); }", null,
+            "'ImmutableArray<int>.Builder' is mutable. Use Select(...).ToImmutableArray() instead." },
         { "FP0006", "namespace Legacy { public static class Db { public static int Load() => 1; } } static class C { static int M() => Legacy.Db.Load(); }", LegacyConfig,
             "'Db' is legacy imperative code. Call it through an [ImperativeAdapter] instead." },
         { "FP0007", "static class C { static void M() { throw new System.Exception(); } }", null,
@@ -51,7 +59,9 @@ public class MessageTests
         { "FP0008", "static class C { static int M(System.Collections.Generic.IList<int> xs) => 0; }", null,
             "'IList<int>' lets callers change the collection. Use IReadOnlyList<T> or ImmutableArray<T> instead." },
         { "FP0008", "static class C { static System.Collections.Generic.Dictionary<string, int> M() => null!; }", null,
-            "'Dictionary<string, int>' lets callers change the collection. Use ImmutableDictionary<TKey, TValue> instead." },
+            "'Dictionary<string, int>' lets callers change the collection. Use IReadOnlyDictionary<TKey, TValue> instead." },
+        { "FP0008", "static class C { static readonly System.Collections.Generic.IList<int> Cache = null!; }", null,
+            "'IList<int>' in a field can be changed by any code that can see it. Use IReadOnlyList<T> or ImmutableArray<T> instead." },
         { "FP0009", "namespace Legacy { public sealed record Db; } public sealed class ImperativeAdapterAttribute : System.Attribute { } [ImperativeAdapter] public static class A { public static Legacy.Db Get() => null!; }", LegacyConfig,
             "'Get' exposes legacy type 'Db'. Map it to a functional type (a record or Result) instead." },
         { "FP0010", "static class C { static async void Fire() => await System.Threading.Tasks.Task.Yield(); }", null,
@@ -62,6 +72,28 @@ public class MessageTests
             "'DateTime.Now' has side effects. Call it from an [ImperativeAdapter], or pass the value in." },
         { "FP0011", "static class C { static System.Random M() => new System.Random(); }", null,
             "'Random' has side effects. Call it from an [ImperativeAdapter], or pass the value in." },
+        { "FP0011", "static class C { static string M() => System.Environment.NewLine; }", null,
+            "'Environment.NewLine' depends on the machine it runs on. Call it from an [ImperativeAdapter], or pass the value in." },
+        { "FP0014", "public sealed record Order(string Id, System.Collections.Immutable.ImmutableArray<string> Tags);", null,
+            "'ImmutableArray<string>' compares by reference, so equal 'Order' records won't be equal. Use ValueList<T> instead." },
+        { "FP0014", "public sealed record Prices(System.Collections.Immutable.ImmutableDictionary<string, decimal> BySku);", null,
+            "'ImmutableDictionary<string, decimal>' compares by reference, so equal 'Prices' records won't be equal. Use ValueMap<TKey, TValue> instead." },
+        { "FP0015", "using System.Linq; static class C { static int M(int[] xs) => xs.First(); }", null,
+            "'First' throws when nothing matches. Use FirstOrDefault, or a list pattern such as 'is [var first, ..]' instead." },
+        { "FP0015", "static class C { static int M(string s) => int.Parse(s); }", null,
+            "'int.Parse' throws when the text isn't valid. Use int.TryParse instead." },
+        { "FP0015", "static class C { static int M(System.Collections.Generic.IReadOnlyDictionary<string, int> d) => d[\"a\"]; }", null,
+            "'d[\"a\"]' throws when the key is missing. Use TryGetValue or GetValueOrDefault instead." },
+        { "FP0001", "static class C { static void M(System.Collections.Immutable.ImmutableList<int> xs) => xs.ForEach(x => { }); }", null,
+            "'ForEach' loops are not allowed. Use LINQ, Aggregate or recursion instead." },
+        { "FP0005", "static class C { static int M() { System.Collections.Generic.IList<int> xs = [1]; return xs.Count; } }", null,
+            "'IList<int>' is mutable. Use IReadOnlyList<T> or ImmutableArray<T> instead." },
+        { "FP0012", "using System.Collections.Immutable; static class C { static void M(ImmutableArray<int> xs) { xs.Add(1); } }", null,
+            "'ImmutableArray.Add' returns a new value and leaves the original unchanged. Use the result instead." },
+        { "FP0013", "public enum Colour { Red, Green } static class C { static int M(Colour c) => c switch { Colour.Red => 1, _ => 0 }; }", null,
+            "'_' matches every case of 'Colour' that isn't listed, so a new case won't be an error. List each case instead." },
+        { "FP0013", "public enum Colour { Red, Green } static class C { static int M(Colour c) { switch (c) { default: return 0; } } }", null,
+            "A switch statement over the enum 'Colour' isn't checked for missing cases. Use a switch expression instead." },
     };
 
     [Theory]
@@ -86,7 +118,9 @@ public class MessageTests
     public void Each_message_is_one_short_line(string id, string message)
     {
         Assert.DoesNotContain('\n', message);
-        Assert.True(message.Length <= 120, $"{id} message is {message.Length} chars; keep it under 120 so it fits on one line of build output.");
+        // Type and member names vary, so measure the wording around them.
+        var wording = Regex.Replace(message, "'[^']*'", "''").Length;
+        Assert.True(wording <= 110, $"{id} message is {wording} chars without its quoted names; keep it short enough for one line of build output.");
         Assert.DoesNotMatch(new Regex(@"\{\d+\}"), message);
     }
 
@@ -99,7 +133,7 @@ public class MessageTests
         Assert.True(sentences.Length >= 2, $"{id}: '{message}' should state the problem and then the remedy.");
 
         // The remedy is an instruction, so it starts with a verb.
-        string[] verbs = ["Use", "Bind", "Mark", "Declare", "Call", "Return", "Map"];
+        string[] verbs = ["Use", "Bind", "Mark", "Declare", "Call", "Return", "Map", "List", "Build"];
         var remedy = sentences.Last();
         Assert.True(verbs.Any(v => remedy.StartsWith(v)),
             $"{id}: remedy '{remedy}' should start with one of: {string.Join(", ", verbs)}.");
