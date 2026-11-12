@@ -11,13 +11,13 @@ namespace FunctionalLint.Tests.Rules;
 
 public class FP0018_ReferencesOutsidePolicy
 {
-    // A core that references the .NET base library plus two libraries of its own: Acme.Db and Functional. Plus a
+    // A core that calls into the .NET base library and two libraries of its own: Acme.Db and Functional. Plus a
     // stand-in for a .NET Standard facade, at the path NuGet unpacks NETStandard.Library to: that's the base library.
     private static async Task<ImmutableArray<Diagnostic>> Findings(string? allowed)
     {
         var references = await Lint.References.ResolveAsync(LanguageNames.CSharp, CancellationToken.None);
         CSharpCompilation Library(string name) => CSharpCompilation.Create(name,
-            [CSharpSyntaxTree.ParseText($"namespace {name} {{ public static class Api {{ }} }}")], references,
+            [CSharpSyntaxTree.ParseText($"namespace {name} {{ public static class Api {{ public static int Query() => 1; }} }}")], references,
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
         using var image = new System.IO.MemoryStream();
         Library("Standard").Emit(image);
@@ -25,7 +25,7 @@ public class FP0018_ReferencesOutsidePolicy
             filePath: "/home/me/.nuget/packages/netstandard.library/2.0.3/build/netstandard2.0/ref/Standard.dll");
 
         var compilation = CSharpCompilation.Create("Core",
-            [CSharpSyntaxTree.ParseText("public static class C { static object A() => typeof(Acme.Db.Api); static object B() => typeof(Functional.Api); static object D() => typeof(Standard.Api); }")],
+            [CSharpSyntaxTree.ParseText("public static class C { static int A() => Acme.Db.Api.Query(); static int B() => Functional.Api.Query(); static int D() => Standard.Api.Query(); }")],
             references.Add(Library("Acme.Db").ToMetadataReference()).Add(Library("Functional").ToMetadataReference()).Add(standard),
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
         var config = allowed is null ? "" : "functional_lint.allowed_references = " + allowed;
@@ -38,7 +38,7 @@ public class FP0018_ReferencesOutsidePolicy
     {
         var found = (await Findings("Functional")).Where(d => d.Id == "FP0018").ToList();
         Assert.Equal(
-            ["'Acme.Db' isn't on this core's list of allowed references. Move the code that uses it to a shell project."],
+            ["'Api.Query' comes from 'Acme.Db', which isn't on this core's list of allowed references. Move the code that uses it to a shell project."],
             found.Select(d => d.GetMessage()));
     }
 

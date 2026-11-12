@@ -23,7 +23,7 @@ A Roslyn analyzer that keeps a C# project functional. It reports errors at build
 | [FP0015](docs/rules/FP0015.md) | Calls that throw: `First`, `Single`, `Parse`, `dict[key]`, `ToDictionary`... | `FirstOrDefault`, list patterns, `TryParse`, `TryGetValue` | |
 | [FP0016](docs/rules/FP0016.md) | `#pragma warning disable`, `[SuppressMessage]`, `#nullable disable`; with a policy, also lowered rules, nullable off, files marked generated, a core that stopped loading FunctionalLint | Fix what the rule reports | |
 | [FP0017](docs/rules/FP0017.md) | With a policy: `[ImperativeAdapter]` outside the policy's adapter namespaces | Pass the value in, or move the adapter | |
-| [FP0018](docs/rules/FP0018.md) | With a policy: references beyond the .NET base library and the policy's list | Move that code to a shell project | |
+| [FP0018](docs/rules/FP0018.md) | With a policy: using a library beyond the .NET base library and the policy's list | Move that code to a shell project | |
 
 Each rule's page has a before/after example. The build output links to it.
 
@@ -155,6 +155,7 @@ functional_lint.legacy_namespaces = none              # existing imperative code
 functional_lint.adapter_namespaces = Shop.Adapters    # where [ImperativeAdapter] may be used (FP0017)
 functional_lint.allowed_references = Functional       # what a core may reference besides .NET (FP0018)
 functional_lint.impure_apis =                         # extra side-effecting APIs (FP0011)
+functional_lint.gate_only =                           # cores only the gate checks (their build can't load the lint)
 ```
 
 It's a globalconfig, so `FunctionalCore.props` adds it to the build and the IDE shows the same results. The gate (`heal.sh --check`, the agent hook and CI) is what enforces it. The gate reads the policy itself, so its values win over any `.editorconfig`. Then for each core it reports (FP0016):

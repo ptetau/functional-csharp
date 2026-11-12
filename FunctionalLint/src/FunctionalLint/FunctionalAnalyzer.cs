@@ -65,7 +65,8 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         "Classes are not allowed",
         "Class '{0}' is not allowed. Use a record for data or a static class for functions.",
         "Plain classes mix data with behaviour and usually hold mutable state. Put data in records and " +
-        "functions in static classes. A code fix converts the class when it is safe to.");
+        "functions in static classes. Attributes, and classes that extend a library's abstract class (plug-ins such " +
+        "as an analyzer or a JSON converter), are allowed. A code fix converts the class when it is safe to.");
 
     public static readonly DiagnosticDescriptor NoMutableTypes = Rule("FP0005",
         "Mutable collection types are not allowed",
@@ -153,10 +154,10 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
 
     public static readonly DiagnosticDescriptor ReferenceOutsidePolicy = Rule("FP0018",
         "Functional cores reference only allowed libraries",
-        "'{0}' isn't on this core's list of allowed references. Move the code that uses it to a shell project.",
-        "A core that can't reference a database client, logger or HTTP library can't call one. A core may reference " +
-        "the .NET base library and what functional_lint.allowed_references lists (set by functionallint.policy). " +
-        "Off when that key isn't set.");
+        "'{0}' comes from '{1}', which isn't on this core's list of allowed references. Move the code that uses it to a shell project.",
+        "A core that can't use a database client, logger or HTTP library can't call one. A core may use the .NET base " +
+        "library and what functional_lint.allowed_references lists (set by functionallint.policy); each use of anything " +
+        "else is reported where it is. Adapters are exempt. Off when that key isn't set.");
 
     public const string HelpLinkBase = "https://github.com/ptetau/functional-csharp/blob/main/FunctionalLint/docs/rules/";
 
@@ -278,7 +279,6 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         context.RegisterSymbolAction(AnalyzeAdapterSignature, SymbolKind.Method, SymbolKind.Property, SymbolKind.Field);
         // Policy rules: about adapters and the project itself, so not guarded either.
         context.RegisterSyntaxNodeAction(AnalyzeAdapterPlacement, SyntaxKind.Attribute);
-        context.RegisterCompilationAction(AnalyzeReferences);
         context.RegisterSyntaxTreeAction(ctx =>
         {
             var mayLower = PolicyList(ctx.Options.AnalyzerConfigOptionsProvider.GetOptions(ctx.Tree), MayLowerKey) ?? ImmutableArray<string>.Empty;
@@ -294,6 +294,13 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
             var GuardSymbol = guard.Symbol;
 
             start.RegisterOperationAction(GuardOp(AnalyzeLoop), OperationKind.Loop);
+
+            // FP0018, when the policy sets the allowed references. Each library is judged once per compilation.
+            if (PolicyList(start.Options.AnalyzerConfigOptionsProvider.GlobalOptions, AllowedReferencesKey) is { } allowedReferences)
+            {
+                var outside = new ConcurrentDictionary<IAssemblySymbol, bool>(SymbolEqualityComparer.Default);
+                start.RegisterOperationAction(GuardOp(ctx => AnalyzeReference(ctx, allowedReferences, outside)), ReferenceKinds);
+            }
             start.RegisterOperationAction(GuardOp(AnalyzeIndentedWriter), OperationKind.ObjectCreation);
             start.RegisterOperationAction(GuardOp(AnalyzeReplaceLineEndings), OperationKind.Invocation);
             start.RegisterOperationAction(GuardOp(AnalyzeGoto), OperationKind.Branch);
@@ -549,6 +556,11 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
 
         // Attributes have to be classes.
         if (InheritsFrom(type, "System.Attribute")) return;
+
+        // So do plug-ins: a class that extends a library's abstract class (DiagnosticAnalyzer, JsonConverter<T>, a
+        // web framework's controller base). The library calls it; FP0003 still checks its fields.
+        if (type.BaseType is { IsAbstract: true, SpecialType: not SpecialType.System_Object } baseType
+            && !baseType.Locations.Any(l => l.IsInSource)) return;
 
         ctx.ReportDiagnostic(Diagnostic.Create(NoObjects, type.Locations[0], type.Name));
     }
@@ -1292,20 +1304,23 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
             allowed.IsEmpty ? "to a shell project" : "there"));
     }
 
-    private static void AnalyzeReferences(CompilationAnalysisContext ctx)
+    private static void AnalyzeReference(OperationAnalysisContext ctx, ImmutableArray<string> allowed,
+        ConcurrentDictionary<IAssemblySymbol, bool> outside)
     {
-        if (PolicyList(ctx.Options.AnalyzerConfigOptionsProvider.GlobalOptions, AllowedReferencesKey) is not { } allowed) return;
+        var (member, type) = Referenced(ctx.Operation);
+        var assembly = member?.ContainingAssembly ?? type?.ContainingAssembly;
+        if (member is null || type is null || assembly is null
+            || SymbolEqualityComparer.Default.Equals(assembly, ctx.Compilation.Assembly)) return;
 
-        foreach (var reference in ctx.Compilation.References)
-        {
-            if (IsDotNetBaseLibrary(reference)) continue;
-            if (ctx.Compilation.GetAssemblyOrModuleSymbol(reference) is not IAssemblySymbol assembly) continue;
-            var name = assembly.Identity.Name;
-            if (allowed.Any(a => a.EndsWith("*", StringComparison.Ordinal)
-                    ? name.StartsWith(a.Substring(0, a.Length - 1), StringComparison.OrdinalIgnoreCase)
-                    : name.Equals(a, StringComparison.OrdinalIgnoreCase))) continue;
-            ctx.ReportDiagnostic(Diagnostic.Create(ReferenceOutsidePolicy, Location.None, name));
-        }
+        var isOutside = outside.GetOrAdd(assembly, a =>
+            !(ctx.Compilation.GetMetadataReference(a) is { } reference && IsDotNetBaseLibrary(reference))
+            && !allowed.Any(entry => entry.EndsWith("*", StringComparison.Ordinal)
+                ? a.Identity.Name.StartsWith(entry.Substring(0, entry.Length - 1), StringComparison.OrdinalIgnoreCase)
+                : a.Identity.Name.Equals(entry, StringComparison.OrdinalIgnoreCase)));
+        if (!isOutside) return;
+
+        var isWholeType = member is INamedTypeSymbol || member is IMethodSymbol { MethodKind: MethodKind.Constructor };
+        Report(ctx, ReferenceOutsidePolicy, ctx.Operation.Syntax, isWholeType ? type.Name : $"{type.Name}.{member.Name}", assembly.Identity.Name);
     }
 
     // The .NET base library: assemblies from the .NET or .NET Standard reference packs, in a folder named after the

@@ -27,6 +27,7 @@ public class GateTests : IDisposable
         functional_lint.legacy_namespaces = none
         functional_lint.adapter_namespaces = App.Adapters
         functional_lint.allowed_references = Functional, Acme.*   ; trailing comment
+        functional_lint.gate_only = lib/Shared.csproj
         """;
 
     // An in-memory core project whose files sit in a temp folder under a policy.
@@ -67,6 +68,8 @@ public class GateTests : IDisposable
         Assert.True(policy.IsCore(Path.Combine(_folder, "lib", "Shared.csproj")));
         Assert.False(policy.IsCore(Path.Combine(_folder, "src", "Ledger.Cli", "Ledger.Cli.csproj")));
         Assert.False(policy.IsCore(Path.Combine(_folder, "src", "deep", "X.Core", "X.Core.csproj")));
+        Assert.True(policy.IsGateOnly(Path.Combine(_folder, "lib", "Shared.csproj")));
+        Assert.False(policy.IsGateOnly(Path.Combine(_folder, "src", "Ledger.Core", "Ledger.Core.csproj")));
     }
 
     [Fact]
