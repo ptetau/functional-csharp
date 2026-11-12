@@ -176,4 +176,45 @@ public class FP0002_MutationThroughCalls
             }
         }
         """);
+
+    [Fact]
+    public Task Writes_into_existing_arrays_and_buffers_are_flagged() => Verify("""
+        using System;
+        using System.Collections.Immutable;
+
+        static class C
+        {
+            static int[] M(int[] src, int[] dst, byte[] bytes, ImmutableArray<int> items, string s, char[] chars)
+            {
+                {|FP0002:src.CopyTo(dst, 0)|};
+                {|FP0002:dst.SetValue(42, 0)|};
+                {|FP0002:Buffer.BlockCopy(src, 0, dst, 0, 4)|};
+                {|FP0002:Buffer.SetByte(bytes, 0, 1)|};
+                {|FP0002:items.CopyTo(dst)|};
+                {|FP0002:s.CopyTo(0, chars, 0, 1)|};
+                {|FP0002:s.AsSpan().CopyTo(chars)|};
+                return dst;
+            }
+        }
+        """);
+
+    [Fact]
+    public Task Reading_arrays_and_copying_into_new_ones_is_allowed() => Verify("""
+        using System;
+        using System.Linq;
+
+        public sealed record Snapshot(int Size)
+        {
+            public Snapshot CopyTo(int[] target) => this with { Size = target.Length };
+        }
+
+        static class C
+        {
+            static object? A(int[] xs) => xs.GetValue(0);
+            static int[] B(int[] xs) => xs.ToArray();
+            static int[] D(int[] xs) => xs.AsSpan(1).ToArray();
+            static int E(byte[] bytes) => Buffer.ByteLength(bytes) + Buffer.GetByte(bytes, 0);
+            static Snapshot F(Snapshot s, int[] xs) => s.CopyTo(xs);
+        }
+        """);
 }
