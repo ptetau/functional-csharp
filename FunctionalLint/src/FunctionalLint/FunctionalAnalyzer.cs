@@ -141,9 +141,10 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         "Checks must stay on",
         "'{0}' {1}. {2}",
         "A functional core can't turn checks off: no '#pragma warning disable', [SuppressMessage] or '#nullable disable'. " +
-        "The gate (heal.sh --check, the agent hook, CI) also reports what a file can't show: a rule lowered by NoWarn or " +
-        "config, nullable checking turned off, a file marked as generated code, or a policy core that no longer loads " +
-        "FunctionalLint. functional_lint.may_lower lists the exceptions the project owner allows.");
+        "The gate (heal.sh --check, the agent hook, CI) also reports what the build can't: a rule lowered by NoWarn or " +
+        "config, nullable checking or analyzers turned off, code marked as generated ([GeneratedCode], '#line hidden', " +
+        "a generated file), a second policy file, or a policy core that no longer loads FunctionalLint. " +
+        "functional_lint.may_lower lists the exceptions the project owner allows.");
 
     public static readonly DiagnosticDescriptor AdapterPlacement = Rule("FP0017",
         "Adapters only where the policy allows them",
@@ -279,10 +280,11 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         // Policy rules: about adapters and the project itself, so not guarded either.
         context.RegisterSyntaxNodeAction(AnalyzeAdapterPlacement, SyntaxKind.Attribute);
         context.RegisterCompilationAction(AnalyzeReferences);
-        context.RegisterSyntaxTreeAction(ctx =>
+        context.RegisterSemanticModelAction(ctx =>
         {
-            var mayLower = PolicyList(ctx.Options.AnalyzerConfigOptionsProvider.GetOptions(ctx.Tree), MayLowerKey) ?? ImmutableArray<string>.Empty;
-            foreach (var found in SwitchOffs(ctx.Tree, mayLower, ctx.CancellationToken)) ctx.ReportDiagnostic(found);
+            var tree = ctx.SemanticModel.SyntaxTree;
+            var mayLower = PolicyList(ctx.Options.AnalyzerConfigOptionsProvider.GetOptions(tree), MayLowerKey) ?? ImmutableArray<string>.Empty;
+            foreach (var found in SwitchOffs(tree, ctx.SemanticModel, mayLower, ctx.CancellationToken)) ctx.ReportDiagnostic(found);
         });
 
         context.RegisterCompilationStartAction(start =>
@@ -1226,11 +1228,27 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
 
     private const string RemoveIt = "Remove it and fix the code it hides.";
 
+    // Attributes that switch checks off, by full name. Roslyn matches them by symbol, so an alias
+    // (using Quiet = ...SuppressMessageAttribute) works as well as the plain name.
+    private static readonly string[] SuppressionAttributes =
+    {
+        "System.Diagnostics.CodeAnalysis.SuppressMessageAttribute",
+        "System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessageAttribute",
+    };
+
+    // Code marked with this is generated code to Roslyn, so analyzers skip it.
+    private const string GeneratedCodeAttribute = "System.CodeDom.Compiler.GeneratedCodeAttribute";
+
     /// <summary>
     /// What turns checks off inside a file: '#pragma warning disable', [SuppressMessage] and '#nullable disable'.
-    /// Public so the gate can run the same scan where a pragma can't hide FP0016 itself.
+    /// Public so the gate can run the same scan where a pragma can't hide FP0016 itself. With a semantic model,
+    /// attributes are matched by what they bind to, so an alias can't hide them.
     /// </summary>
-    public static IEnumerable<Diagnostic> SwitchOffs(SyntaxTree tree, ImmutableArray<string> mayLower, CancellationToken ct)
+    public static IEnumerable<Diagnostic> SwitchOffs(SyntaxTree tree, ImmutableArray<string> mayLower, CancellationToken ct) =>
+        SwitchOffs(tree, null, mayLower, ct);
+
+    /// <inheritdoc cref="SwitchOffs(SyntaxTree, ImmutableArray{string}, CancellationToken)"/>
+    public static IEnumerable<Diagnostic> SwitchOffs(SyntaxTree tree, SemanticModel? model, ImmutableArray<string> mayLower, CancellationToken ct)
     {
         bool Allowed(string id) => mayLower.Contains(id, StringComparer.OrdinalIgnoreCase);
         var root = tree.GetRoot(ct);
@@ -1246,12 +1264,10 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
                 yield return Diagnostic.Create(RuleSwitchedOff, nullable.GetLocation(), Short(nullable.ToString()), "turns nullable checks off", RemoveIt);
         }
 
+        var aliases = Aliases(root);
         foreach (var attribute in root.DescendantNodes().OfType<AttributeSyntax>())
         {
-            var name = attribute.Name.ToString();
-            var simple = name.Substring(name.LastIndexOf('.') + 1);
-            if (simple is not ("SuppressMessage" or "SuppressMessageAttribute" or "UnconditionalSuppressMessage" or "UnconditionalSuppressMessageAttribute"))
-                continue;
+            if (AttributeKind(attribute, model, aliases, ct) != SwitchOffAttribute.Suppression) continue;
             // [SuppressMessage("Category", "FP0001:Title")]: the rule ID is the second argument, up to a colon.
             var id = attribute.ArgumentList?.Arguments.Skip(1).FirstOrDefault()?.Expression is LiteralExpressionSyntax literal
                 ? literal.Token.ValueText.Split(':')[0].Trim() : "";
@@ -1259,6 +1275,64 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
                 yield return Diagnostic.Create(RuleSwitchedOff, attribute.GetLocation(), Short($"[{attribute}]"), "turns checks off", RemoveIt);
         }
     }
+
+    /// <summary>
+    /// Code every analyzer skips, so the build can't report it there: a type or member marked [GeneratedCode], and
+    /// lines after '#line hidden'. For the gate, which reports these itself.
+    /// </summary>
+    public static IEnumerable<Diagnostic> HiddenFromAnalyzers(SyntaxTree tree, SemanticModel? model, CancellationToken ct)
+    {
+        var root = tree.GetRoot(ct);
+        var aliases = Aliases(root);
+        var generated = root.DescendantNodes().OfType<AttributeSyntax>()
+            .Where(attribute => AttributeKind(attribute, model, aliases, ct) == SwitchOffAttribute.Generated)
+            .Select(attribute => Diagnostic.Create(RuleSwitchedOff, attribute.GetLocation(), Short($"[{attribute}]"),
+                "makes every analyzer skip what it marks", RemoveIt));
+        var hidden = root.DescendantTrivia(descendIntoTrivia: true)
+            .Select(trivia => trivia.GetStructure()).OfType<LineDirectiveTriviaSyntax>()
+            .Where(line => line.Line.IsKind(SyntaxKind.HiddenKeyword))
+            .Select(line => Diagnostic.Create(RuleSwitchedOff, line.GetLocation(), Short(line.ToString()),
+                "hides the code after it from every analyzer", RemoveIt));
+        return generated.Concat(hidden);
+    }
+
+    private enum SwitchOffAttribute { None, Suppression, Generated }
+
+    // Aliases for the attributes, as in 'using Quiet = System.Diagnostics.CodeAnalysis.SuppressMessageAttribute;'.
+    // Found here so the scan works without a semantic model; global aliases in other files need one.
+    private static ImmutableArray<(string Alias, string Target)> Aliases(SyntaxNode root) =>
+        root.DescendantNodes().OfType<UsingDirectiveSyntax>()
+            .Where(u => u.Alias is not null && u.Name is not null)
+            .Select(u => (Alias: u.Alias!.Name.Identifier.ValueText, Target: LastName(u.Name!.ToString())))
+            .ToImmutableArray();
+
+    private static SwitchOffAttribute AttributeKind(AttributeSyntax attribute, SemanticModel? model,
+        ImmutableArray<(string Alias, string Target)> aliases, CancellationToken ct)
+    {
+        // By symbol: the type the attribute binds to, whatever it's called here.
+        var bound = model?.GetSymbolInfo(attribute, ct) is { } info
+            ? (info.Symbol ?? info.CandidateSymbols.FirstOrDefault())?.ContainingType?.ToDisplayString()
+            : null;
+        if (bound is not null && SuppressionAttributes.Contains(bound, StringComparer.Ordinal)) return SwitchOffAttribute.Suppression;
+        if (bound == GeneratedCodeAttribute) return SwitchOffAttribute.Generated;
+
+        // By name, and through any alias in this file: '[SuppressMessage]', '[Quiet]'.
+        var name = LastName(attribute.Name.ToString());
+        // [Quiet] finds an alias called Quiet or QuietAttribute, as the compiler does.
+        var target = aliases.Where(a => a.Alias == name || a.Alias == name + "Attribute").Select(a => a.Target).FirstOrDefault() ?? name;
+        var simple = target.EndsWith("Attribute", StringComparison.Ordinal) ? target.Substring(0, target.Length - "Attribute".Length) : target;
+        return simple switch
+        {
+            "SuppressMessage" or "UnconditionalSuppressMessage" => SwitchOffAttribute.Suppression,
+            // A type of the same name elsewhere doesn't make code generated, so trust the symbol when there is one.
+            "GeneratedCode" when bound is null => SwitchOffAttribute.Generated,
+            _ => SwitchOffAttribute.None,
+        };
+    }
+
+    // The last part of a dotted or alias-qualified name: 'System.Diagnostics.CodeAnalysis.SuppressMessage' -> 'SuppressMessage'.
+    private static string LastName(string name) =>
+        name.Substring(Math.Max(name.LastIndexOf('.'), name.LastIndexOf(':')) + 1).Trim();
 
     private static string Short(string code)
     {
