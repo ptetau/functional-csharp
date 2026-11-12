@@ -13,42 +13,62 @@ using FunctionalLint.Heal;
 //
 // --check and --hook ask a running check server first, and fall back to checking here. --hook also starts the
 // server in the background for next time. FUNCTIONALLINT_NO_SERVER=1 turns the server off.
+//
+// A FUNCTIONALLINT_POLICY that names a missing file stops everything with exit 2: the gate fails closed rather
+// than run without the owner's rules.
 
 var cwd = Environment.CurrentDirectory;
 
-if (args.Contains("--serve")) return await Server.RunAsync();
-
-if (args.Contains("--server-status"))
+try
 {
-    var (running, socket) = await Server.StatusAsync();
-    Console.WriteLine(running ? $"running ({socket})" : Server.Disabled ? "off (FUNCTIONALLINT_NO_SERVER)" : "not running");
-    return running ? 0 : 1;
+    return await MainAsync();
 }
-
-if (args.Contains("--hook"))
+catch (PolicyNotFoundException e)
 {
-    var edited = Hook.EditedFile(await Console.In.ReadToEndAsync());
-    if (edited is null || !edited.EndsWith(".cs", StringComparison.OrdinalIgnoreCase)) return 0;
-    if (Hook.ProjectFor(edited) is not { } owner) return 0;
-
-    var (code, report) = await CheckAsync(owner, Path.GetFullPath(edited), startServer: true);
-    if (code is 0 or 3) return 0;   // clean, or not a functional project
-    Console.Error.Write(report);
+    Console.Error.WriteLine(e.Message);
     return 2;
 }
 
-var path = args.FirstOrDefault(a => !a.StartsWith("--"));
-if (path is null || !File.Exists(path))
+async Task<int> MainAsync()
 {
-    Console.Error.WriteLine("usage: heal <project.csproj | solution.sln> [--check]   or   heal --hook   or   heal --serve");
-    return 2;
-}
+    if (args.Contains("--serve"))
+    {
+        Policy.EnsureNamedExists();   // a policy named but missing: don't serve
+        return await Server.RunAsync();
+    }
 
-var (exit, output) = args.Contains("--check")
-    ? await CheckAsync(path, focus: null, startServer: false)
-    : await HealAsync(path);
-Console.Write(output);
-return exit == 3 ? 2 : exit;
+    if (args.Contains("--server-status"))
+    {
+        var (running, socket) = await Server.StatusAsync();
+        Console.WriteLine(running ? $"running ({socket})" : Server.Disabled ? "off (FUNCTIONALLINT_NO_SERVER)" : "not running");
+        return running ? 0 : 1;
+    }
+
+    if (args.Contains("--hook"))
+    {
+        var edited = Hook.EditedFile(await Console.In.ReadToEndAsync());
+        if (edited is null || !edited.EndsWith(".cs", StringComparison.OrdinalIgnoreCase)) return 0;
+        if (Hook.ProjectFor(edited) is not { } owner) return 0;
+
+        var (code, report) = await CheckAsync(owner, Path.GetFullPath(edited), startServer: true);
+        if (code is 0 or 3) return 0;   // clean, or not a functional project
+        Console.Error.Write(report);
+        return 2;
+    }
+
+    var path = args.FirstOrDefault(a => !a.StartsWith("--"));
+    if (path is null || !File.Exists(path))
+    {
+        Console.Error.WriteLine("usage: heal <project.csproj | solution.sln> [--check]   or   heal --hook   or   heal --serve");
+        return 2;
+    }
+
+    var (exit, output) = args.Contains("--check")
+        ? await CheckAsync(path, focus: null, startServer: false)
+        : await HealAsync(path);
+    Console.Write(output);
+    return exit == 3 ? 2 : exit;
+}
 
 async Task<(int Code, string Report)> CheckAsync(string target, string? focus, bool startServer)
 {
@@ -56,8 +76,10 @@ async Task<(int Code, string Report)> CheckAsync(string target, string? focus, b
     if (!target.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
         return await CheckHereAsync(target, focus);
 
-    // The server may run in another folder, so send absolute paths.
-    var request = new Server.Request(Path.GetFullPath(target), focus is null ? null : Path.GetFullPath(focus), cwd);
+    // The server may run in another folder, so send absolute paths. And the policy this check must use: the server
+    // only answers for the same one.
+    Policy.EnsureNamedExists();   // a policy named but missing fails here, before any server is asked
+    var request = new Server.Request(Path.GetFullPath(target), focus is null ? null : Path.GetFullPath(focus), cwd, Policy.Named());
     if (await Server.TryAskAsync(request, TimeSpan.FromSeconds(60)) is { } answer)
         return (answer.Code, answer.Report);
 

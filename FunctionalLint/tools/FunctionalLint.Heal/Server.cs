@@ -21,7 +21,8 @@ namespace FunctionalLint.Heal;
 /// </summary>
 public static class Server
 {
-    public sealed record Request(string Project, string? Focus, string Cwd);
+    /// <summary>A check. <paramref name="Policy"/> is the client's FUNCTIONALLINT_POLICY (a full path), or null when unset.</summary>
+    public sealed record Request(string Project, string? Focus, string Cwd, string? Policy = null);
 
     public sealed record Response(int Code, string Report, bool Restart = false);
 
@@ -36,15 +37,16 @@ public static class Server
     public static bool Disabled => Environment.GetEnvironmentVariable("FUNCTIONALLINT_NO_SERVER") is { Length: > 0 } and not "0";
 
     /// <summary>
-    /// One socket per copy of the tool and per user, in a folder only this user can open:
+    /// One socket per copy of the tool, per user and per FUNCTIONALLINT_POLICY, in a folder only this user can open:
     /// $XDG_RUNTIME_DIR/functionallint, or ~/.cache/functionallint. Null if that folder can't be made private,
     /// in which case there's no server. (A socket in the shared temp folder could be answered by another user.)
+    /// A server started with another policy has another socket, so it never answers checks meant for this one.
     /// </summary>
     public static string? SocketPath
     {
         get
         {
-            var key = Encoding.UTF8.GetBytes(Path.GetDirectoryName(ToolPath) + "|" + Environment.UserName);
+            var key = Encoding.UTF8.GetBytes(Path.GetDirectoryName(ToolPath) + "|" + Environment.UserName + "|" + Policy.Named());
             var hash = Convert.ToHexString(SHA256.HashData(key))[..12].ToLowerInvariant();
             return PrivateFolder() is { } folder ? Path.Combine(folder, $"{hash}.sock") : null;
         }
@@ -202,6 +204,10 @@ public static class Server
     private static async Task<Response> HandleAsync(Request request, Dictionary<string, Entry> loaded)
     {
         var clock = Stopwatch.StartNew();
+        // The policy comes from the client's environment, not the server's: a server started with another
+        // FUNCTIONALLINT_POLICY (or none) lets the client check in-process instead.
+        if (!string.Equals(request.Policy, Policy.Named(), StringComparison.Ordinal))
+            return new Response(2, "", Restart: true);
         try
         {
             // Relative paths are relative to the client's folder, not the server's.
@@ -249,7 +255,7 @@ public static class Server
         return string.Join("\n", candidates.Select(f => File.Exists(f) ? $"{f}|{File.GetLastWriteTimeUtc(f).Ticks}" : $"{f}|-"));
     }
 
-    private static IEnumerable<string> MsBuildInputs(string projectFile)
+    internal static IEnumerable<string> MsBuildInputs(string projectFile)
     {
         var folder = Path.GetDirectoryName(projectFile)!;
         var nearby = Ancestors(folder).SelectMany(dir => ConfigFileNames.Select(name => Path.Combine(dir, name))).ToList();
