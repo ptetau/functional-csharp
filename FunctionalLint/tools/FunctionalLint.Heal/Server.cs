@@ -29,7 +29,7 @@ public static class Server
 
     // Config files MSBuild and the compiler read from a project's folder and every folder above it.
     private static readonly string[] ConfigFileNames =
-        [".editorconfig", ".globalconfig", "Directory.Build.props", "Directory.Build.targets", "Directory.Packages.props"];
+        [".editorconfig", ".globalconfig", "Directory.Build.props", "Directory.Build.targets", "Directory.Packages.props", Policy.FileName];
 
     private static string ToolPath => Assembly.GetExecutingAssembly().Location;
 
@@ -99,6 +99,11 @@ public static class Server
             return null;
         }
     }
+
+    /// <summary>Whether a server for this copy of the tool is answering, and its socket.</summary>
+    public static async Task<(bool Running, string? Socket)> StatusAsync() =>
+        Disabled || SocketPath is not { } path ? (false, null)
+        : (File.Exists(path) && await IsAliveAsync(path), path);
 
     /// <summary>
     /// Starts a server in the background unless one is running. It outlives this process. A socket file left

@@ -105,8 +105,10 @@ public class RuleCatalogTests
     [MemberData(nameof(RuleIds))]
     public void Every_rule_has_a_test_that_expects_it(string id)
     {
+        // Markup for rules reported in source; `Id == "FP00xx"` for ones about the whole project (no location).
         var marker = "{|" + id + ":";
-        Assert.True(Repo.TestSources().Any(f => File.ReadAllText(f).Contains(marker)),
+        var byId = $"Id == \"{id}\"";
+        Assert.True(Repo.TestSources().Any(f => File.ReadAllText(f) is var text && (text.Contains(marker) || text.Contains(byId))),
             $"No test expects {id}. Add one under tests/FunctionalLint.Tests/Rules.");
     }
 }

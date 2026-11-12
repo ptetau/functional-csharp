@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using FunctionalLint.Heal;
@@ -17,7 +18,7 @@ public class ServerTests
     [Fact]
     public async Task Keeps_a_project_loaded_and_sees_edits_and_new_files()
     {
-        var folder = Directory.CreateTempSubdirectory("heal-server").FullName;
+        var folder = TempFolder.Create("heal-server");
         var stop = new CancellationTokenSource();
         try
         {
@@ -94,11 +95,26 @@ public class ServerTests
 
     private static void Run(string program, string arguments)
     {
-        var start = new ProcessStartInfo(program, arguments) { UseShellExecute = false };
+        // Output goes to a log file, not a pipe: a pipe could be held open by an MSBuild process that outlives this one.
+        // `dotnet test` doesn't show a child's console, so the log is the only way to see why a restore failed.
+        var log = Path.Combine(Path.GetTempPath(), $"functionallint-{Guid.NewGuid():N}.log");
+        var start = new ProcessStartInfo(program, $"{arguments} -flp:logfile=\"{log}\";verbosity=normal") { UseShellExecute = false };
         start.Environment["MSBUILDDISABLENODEREUSE"] = "1";
-        using var process = Process.Start(start)!;
-        Assert.True(process.WaitForExit(TimeSpan.FromMinutes(3)), $"{program} {arguments} didn't finish.");
-        Assert.Equal(0, process.ExitCode);
+        try
+        {
+            using var process = Process.Start(start)!;
+            Assert.True(process.WaitForExit(TimeSpan.FromMinutes(3)), $"{program} {arguments} didn't finish.");
+            if (process.ExitCode != 0)
+            {
+                var lines = File.Exists(log) ? File.ReadAllLines(log) : ["(no log)"];
+                var errors = lines.Where(l => l.Contains("error", StringComparison.OrdinalIgnoreCase)).ToArray();
+                Assert.Fail($"{program} {arguments} exited {process.ExitCode}:\n" + string.Join("\n", errors.Length > 0 ? errors : lines.TakeLast(40)));
+            }
+        }
+        finally
+        {
+            File.Delete(log);
+        }
     }
 
     [Fact]
@@ -106,7 +122,7 @@ public class ServerTests
     {
         // Core's setter would become init, which compiles in Core but breaks Host. Heal is given only Core.csproj,
         // so it has to find the solution to see Host.
-        var folder = Directory.CreateTempSubdirectory("heal-solution").FullName;
+        var folder = TempFolder.Create("heal-solution");
         try
         {
             var props = Path.Combine(Repo.Root, "build", "FunctionalCore.props");
@@ -158,7 +174,7 @@ public class ServerTests
     public async Task A_solution_that_only_mentions_a_similar_name_is_skipped()
     {
         // App.slnx lists App/MyCore.csproj, whose name contains "Core.csproj". Heal must still find and fix Core.
-        var folder = Directory.CreateTempSubdirectory("heal-decoy").FullName;
+        var folder = TempFolder.Create("heal-decoy");
         try
         {
             var props = Path.Combine(Repo.Root, "build", "FunctionalCore.props");
@@ -180,6 +196,39 @@ public class ServerTests
                 Assert.Contains("weren't checked", loaded.Note);
                 await Checker.HealAsync(loaded, folder, Stopwatch.StartNew());
                 Assert.Contains("init;", File.ReadAllText(settings));
+            }
+        }
+        finally
+        {
+            Directory.Delete(folder, recursive: true);
+        }
+    }
+    [Fact]
+    public async Task A_policy_core_that_stopped_loading_FunctionalLint_is_still_checked_and_reported()
+    {
+        // The project file lost its FunctionalCore.props import, which would silently switch every check off.
+        var folder = TempFolder.Create("heal-policy");
+        try
+        {
+            File.WriteAllText(Path.Combine(folder, "functionallint.policy"), "is_global = true\nfunctional_lint.cores = Core/Core.csproj\n");
+            Directory.CreateDirectory(Path.Combine(folder, "Core"));
+            var project = Path.Combine(folder, "Core", "Core.csproj");
+            File.WriteAllText(project, """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup><TargetFramework>net11.0</TargetFramework><Nullable>enable</Nullable></PropertyGroup>
+                </Project>
+                """);
+            File.WriteAllText(Path.Combine(folder, "Core", "Prices.cs"),
+                "namespace Core;\npublic static class Prices { public static int Total(int[] xs) { var t = 0; foreach (var x in xs) t += x; return t; } }\n");
+            Run("dotnet", $"restore \"{project}\" -nodeReuse:false --disable-build-servers -v q");
+
+            var loaded = await Checker.LoadAsync(project);
+            using (loaded.Workspace)
+            {
+                var (code, report) = await Checker.CheckAsync(loaded.Workspace.CurrentSolution, loaded.Functional, null, folder, Stopwatch.StartNew());
+                Assert.Equal(1, code);
+                Assert.Contains("error FP0016: 'Core' is a policy core but doesn't load FunctionalLint. Restore its import of FunctionalCore.props.", report);
+                Assert.Contains("FP0001", report);   // and every rule still runs
             }
         }
         finally

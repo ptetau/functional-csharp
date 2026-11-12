@@ -46,6 +46,9 @@ public static class Lint
         };
         test.SolutionTransforms.Add(UseCSharp15);
         AddConfig(test.TestState, config);
+        // The framework would add '#pragma warning disable' to check each diagnostic can be suppressed. FP0016
+        // reports exactly that pragma, by design, so skip the check.
+        test.TestBehaviors |= TestBehaviors.SkipSuppressionCheck;
         return test.RunAsync();
     }
 
@@ -65,6 +68,7 @@ public static class Lint
         // By default the framework ignores markup in FixedCode for IDs the fix handles. Some diagnostics
         // are left on purpose (e.g. `new List<int>()` under FP0005), so read the markup as written.
         test.FixedState.MarkupHandling = MarkupMode.Allow;
+        test.TestBehaviors |= TestBehaviors.SkipSuppressionCheck;
         return test.RunAsync();
     }
 

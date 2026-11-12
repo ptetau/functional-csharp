@@ -7,6 +7,7 @@ using FunctionalLint.Heal;
 //   heal --hook                                       agent hook: read the edited file from stdin JSON,
 //                                                     check its project, report problems on stderr
 //   heal --serve                                      keep projects loaded so checks take well under a second
+//   heal --server-status                              say whether the server is running (exit 0 if it is)
 // Exit codes: 0 clean, 1 problems remain, 2 couldn't run. In --hook mode problems exit 2,
 // which is how Claude Code hooks hand stderr back to the agent.
 //
@@ -16,6 +17,13 @@ using FunctionalLint.Heal;
 var cwd = Environment.CurrentDirectory;
 
 if (args.Contains("--serve")) return await Server.RunAsync();
+
+if (args.Contains("--server-status"))
+{
+    var (running, socket) = await Server.StatusAsync();
+    Console.WriteLine(running ? $"running ({socket})" : Server.Disabled ? "off (FUNCTIONALLINT_NO_SERVER)" : "not running");
+    return running ? 0 : 1;
+}
 
 if (args.Contains("--hook"))
 {

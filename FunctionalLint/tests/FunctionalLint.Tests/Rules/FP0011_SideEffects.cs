@@ -138,6 +138,16 @@ public class FP0011_IndentedJson
             public static readonly JsonSerializerOptions A = new() { {|FP0011:WriteIndented = true|} };
             public static readonly JsonSerializerOptions B = new(JsonSerializerDefaults.Web) { {|FP0011:WriteIndented = true|} };
             public static readonly JsonWriterOptions D = new() { {|FP0011:Indented = true|} };
+            public static readonly System.Xml.XmlWriterSettings E = new() { {|FP0011:Indent = true|} };
+        }
+        """);
+
+    [Fact]
+    public Task ReplaceLineEndings_without_an_argument_is_flagged() => Verify("""
+        public static class C
+        {
+            public static string A(string s) => {|FP0011:s.ReplaceLineEndings()|};
+            public static string B(string s) => s.ReplaceLineEndings("\n");
         }
         """);
 
@@ -152,6 +162,7 @@ public class FP0011_IndentedJson
             public static readonly JsonSerializerOptions D = new() { WriteIndented = false };
             public static readonly JsonSerializerOptions E = new() { PropertyNameCaseInsensitive = true };
             public static readonly JsonWriterOptions F = new() { Indented = true, NewLine = "\n" };
+            public static readonly System.Xml.XmlWriterSettings G = new() { Indent = true, NewLineChars = "\n" };
         }
         """);
 }

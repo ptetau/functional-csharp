@@ -2,7 +2,7 @@ using System.Collections.Immutable;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace Functional;
+namespace Functional.Adapters;
 
 /// <summary>
 /// Lets System.Text.Json read and write <see cref="ValueList{T}"/> as a JSON array and <see cref="ValueMap{TKey,TValue}"/>

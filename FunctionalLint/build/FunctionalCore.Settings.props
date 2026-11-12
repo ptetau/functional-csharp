@@ -13,14 +13,21 @@
     <!-- Except rules you've deliberately set to "warning" while migrating, which should stay warnings:
          FunctionalLint's own rules and the culture rules below. NuGet security advisories stay visible
          without blocking the build. -->
-    <WarningsNotAsErrors>$(WarningsNotAsErrors);FP0001;FP0002;FP0003;FP0004;FP0005;FP0006;FP0007;FP0008;FP0009;FP0010;FP0011;FP0012;FP0013;FP0014;FP0015;CA1304;CA1305;CA1309;CA1310;CA1311;NU1901;NU1902;NU1903;NU1904</WarningsNotAsErrors>
+    <WarningsNotAsErrors>$(WarningsNotAsErrors);FP0001;FP0002;FP0003;FP0004;FP0005;FP0006;FP0007;FP0008;FP0009;FP0010;FP0011;FP0012;FP0013;FP0014;FP0015;FP0016;FP0017;FP0018;CA1304;CA1305;CA1309;CA1310;CA1311;NU1901;NU1902;NU1903;NU1904</WarningsNotAsErrors>
     <!-- CS8524 wants a discard arm for unnamed enum values. That arm would hide
          missing cases, so turn it off and let CS8509 do the work. -->
     <NoWarn>$(NoWarn);CS8524</NoWarn>
   </PropertyGroup>
 
+  <!-- The repository's policy (functionallint.policy in a folder above the project), if it has one. It's a
+       globalconfig, so the build sees the same values the gate (heal.sh, the hook, CI) enforces. -->
+  <PropertyGroup>
+    <FunctionalLintPolicy Condition="'$(FunctionalLintPolicy)' == ''">$([MSBuild]::GetPathOfFileAbove('functionallint.policy', '$(MSBuildProjectDirectory)'))</FunctionalLintPolicy>
+  </PropertyGroup>
+
   <ItemGroup>
     <GlobalAnalyzerConfigFiles Include="$(MSBuildThisFileDirectory)FunctionalCore.globalconfig" />
+    <GlobalAnalyzerConfigFiles Include="$(FunctionalLintPolicy)" Condition="'$(FunctionalLintPolicy)' != ''" />
   </ItemGroup>
 
 </Project>

@@ -79,6 +79,27 @@ public class NewLineFixTests
         """);
 
     [Fact]
+    public Task Xml_settings_get_NewLineChars_and_ReplaceLineEndings_gets_an_argument() => VerifyFix<NewLineFix>("""
+        using System.Xml;
+
+        public static class C
+        {
+            public static readonly XmlWriterSettings Settings = new() { {|FP0011:Indent = true|} };
+
+            public static string Normalise(string text) => {|FP0011:text.ReplaceLineEndings()|};
+        }
+        """, """
+        using System.Xml;
+
+        public static class C
+        {
+            public static readonly XmlWriterSettings Settings = new() { Indent = true, NewLineChars = "\n" };
+
+            public static string Normalise(string text) => text.ReplaceLineEndings("\n");
+        }
+        """);
+
+    [Fact]
     public Task Other_side_effects_get_no_fix() => VerifyFix<NewLineFix>("""
         public static class C
         {

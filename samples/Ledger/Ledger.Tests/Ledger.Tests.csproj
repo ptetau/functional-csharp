@@ -24,4 +24,8 @@
     <ProjectReference Include="..\Ledger.Cli\Ledger.Cli.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Compile Include="..\..\TestSupport\Fuzz.cs" Link="Fuzz.cs" />
+  </ItemGroup>
+
 </Project>

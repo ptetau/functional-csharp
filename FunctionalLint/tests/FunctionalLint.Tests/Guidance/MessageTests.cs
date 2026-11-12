@@ -17,6 +17,12 @@ public class MessageTests
 {
     private const string LegacyConfig = "functional_lint.legacy_namespaces = Legacy";
 
+    // A project with its own [ValueEquality] types, like samples/Functional: FP0014 suggests them by name.
+    private const string ValueTypes =
+        "public sealed class ValueEqualityAttribute : System.Attribute { } " +
+        "[ValueEquality] public readonly record struct ValueList<T>; " +
+        "[ValueEquality] public readonly record struct ValueMap<TKey, TValue>; ";
+
     // (rule, code that triggers it, config, exact message)
     public static TheoryData<string, string, string?, string> Messages => new()
     {
@@ -74,11 +80,17 @@ public class MessageTests
             "'Random' has side effects. Call it from an [ImperativeAdapter], or pass the value in." },
         { "FP0011", "static class C { static string M() => System.Environment.NewLine; }", null,
             "'Environment.NewLine' depends on the machine it runs on. Call it from an [ImperativeAdapter], or pass the value in." },
+        { "FP0011", "static class C { static string M(string s) => s.ReplaceLineEndings(); }", null,
+            "'string.ReplaceLineEndings()' uses Environment.NewLine, which is \"\\r\\n\" on Windows. Use ReplaceLineEndings(\"\\n\") instead." },
+        { "FP0011", "static class C { static readonly System.Xml.XmlWriterSettings O = new() { Indent = true }; }", null,
+            "'XmlWriterSettings.Indent' writes Environment.NewLine, which is \"\\r\\n\" on Windows. Use NewLineChars = \"\\n\" in the same initializer." },
         { "FP0011", "static class C { static readonly System.Text.Json.JsonSerializerOptions O = new() { WriteIndented = true }; }", null,
             "'JsonSerializerOptions.WriteIndented' writes Environment.NewLine, which is \"\\r\\n\" on Windows. Use NewLine = \"\\n\" in the same initializer." },
         { "FP0014", "public sealed record Order(string Id, System.Collections.Immutable.ImmutableArray<string> Tags);", null,
+            "'ImmutableArray<string>' compares by reference, so equal 'Order' records won't be equal. Use a [ValueEquality] collection instead." },
+        { "FP0014", ValueTypes + "public sealed record Order(string Id, System.Collections.Immutable.ImmutableArray<string> Tags);", null,
             "'ImmutableArray<string>' compares by reference, so equal 'Order' records won't be equal. Use ValueList<T> instead." },
-        { "FP0014", "public sealed record Prices(System.Collections.Immutable.ImmutableDictionary<string, decimal> BySku);", null,
+        { "FP0014", ValueTypes + "public sealed record Prices(System.Collections.Immutable.ImmutableDictionary<string, decimal> BySku);", null,
             "'ImmutableDictionary<string, decimal>' compares by reference, so equal 'Prices' records won't be equal. Use ValueMap<TKey, TValue> instead." },
         { "FP0015", "using System.Linq; static class C { static int M(int[] xs) => xs.First(); }", null,
             "'First' throws when nothing matches. Use FirstOrDefault, or a list pattern such as 'is [var first, ..]' instead." },
@@ -86,6 +98,10 @@ public class MessageTests
             "'int.Parse' throws when the text isn't valid. Use int.TryParse instead." },
         { "FP0015", "static class C { static int M(System.Collections.Generic.IReadOnlyDictionary<string, int> d) => d[\"a\"]; }", null,
             "'d[\"a\"]' throws when the key is missing. Use TryGetValue or GetValueOrDefault instead." },
+        { "FP0016", "#pragma warning disable CS0168\nstatic class C { }", null,
+            "'#pragma warning disable CS0168' turns checks off. Remove it and fix the code it hides." },
+        { "FP0017", Lint.AdapterAttribute + " namespace App.Core { [ImperativeAdapter] static class Clock { } }", "functional_lint.adapter_namespaces = App.Adapters",
+            "'Clock' is an [ImperativeAdapter] outside 'App.Adapters'. Move it there, or pass the value in." },
         { "FP0001", "static class C { static void M(System.Collections.Immutable.ImmutableList<int> xs) => xs.ForEach(x => { }); }", null,
             "'ForEach' loops are not allowed. Use LINQ, Aggregate or recursion instead." },
         { "FP0005", "static class C { static int M() { System.Collections.Generic.IList<int> xs = [1]; return xs.Count; } }", null,
@@ -96,6 +112,17 @@ public class MessageTests
             "'_' matches every case of 'Colour' that isn't listed, so a new case won't be an error. List each case instead." },
         { "FP0013", "public enum Colour { Red, Green } static class C { static int M(Colour c) { switch (c) { default: return 0; } } }", null,
             "A switch statement over the enum 'Colour' isn't checked for missing cases. Use a switch expression instead." },
+    };
+
+    // Messages that need more than one source file to produce (FP0018 needs a second library) or that the gate
+    // reports about a whole project: checked word for word in their own tests, and listed here for the style rules.
+    public static TheoryData<string, string> ProjectLevel => new()
+    {
+        { "FP0018", "'Api.Query' comes from 'Acme.Db', which isn't on this core's list of allowed references. Move the code that uses it to a shell project." },
+        { "FP0016", "'FP0001' is lowered to 'warning' in 'Ledger.Core' (NoWarn, .editorconfig or .globalconfig). Remove that setting." },
+        { "FP0016", "'Ledger.Core' has nullable checking turned off. Remove the <Nullable> setting that turns it off." },
+        { "FP0016", "'Text.cs' is skipped as generated code. Remove the marker (<auto-generated> header, .g.cs name or generated_code)." },
+        { "FP0016", "'Ledger.Core' is a policy core but doesn't load FunctionalLint. Restore its import of FunctionalCore.props." },
     };
 
     [Theory]
@@ -112,6 +139,7 @@ public class MessageTests
     {
         var data = new TheoryData<string, string>();
         foreach (var row in Messages) data.Add((string)row[0], (string)row[3]);
+        foreach (var row in ProjectLevel) data.Add((string)row[0], (string)row[1]);
         return data;
     }
 
@@ -135,7 +163,7 @@ public class MessageTests
         Assert.True(sentences.Length >= 2, $"{id}: '{message}' should state the problem and then the remedy.");
 
         // The remedy is an instruction, so it starts with a verb.
-        string[] verbs = ["Use", "Bind", "Mark", "Declare", "Call", "Return", "Map", "List", "Build"];
+        string[] verbs = ["Use", "Bind", "Mark", "Declare", "Call", "Return", "Map", "List", "Build", "Move", "Remove", "Restore"];
         var remedy = sentences.Last();
         Assert.True(verbs.Any(v => remedy.StartsWith(v)),
             $"{id}: remedy '{remedy}' should start with one of: {string.Join(", ", verbs)}.");
@@ -144,7 +172,7 @@ public class MessageTests
     [Fact]
     public void Every_rule_has_at_least_one_message_example()
     {
-        var covered = Messages.Select(row => (string)row[0]).ToHashSet();
+        var covered = Messages.Select(row => (string)row[0]).Concat(ProjectLevel.Select(row => (string)row[0])).ToHashSet();
         var missing = new FunctionalAnalyzer().SupportedDiagnostics.Select(d => d.Id).Where(id => !covered.Contains(id));
         Assert.Empty(missing);
     }

@@ -1,0 +1,26 @@
+# FunctionalLint policy: the repository owner's rules for the gate (heal.sh --check, the agent hook and CI).
+# It's a globalconfig, so the build applies the same values. Keep it protected: agents shouldn't edit it
+# (see FunctionalLint/README.md, "Protect the rules"), and CI checks pull requests against main's copy.
+is_global = true
+global_level = 200
+
+# The functional core projects, as paths or globs relative to this file.
+functional_lint.cores = samples/Functional/Functional.csproj, samples/*/*.Core/*.Core.csproj, FunctionalLint/src/FunctionalLint/FunctionalLint.csproj, FunctionalLint/src/FunctionalLint.CodeFixes/FunctionalLint.CodeFixes.csproj
+
+# Cores only the gate checks: FunctionalLint's own analyzer and code fixes can't load themselves at build time.
+functional_lint.gate_only = FunctionalLint/src/FunctionalLint/FunctionalLint.csproj, FunctionalLint/src/FunctionalLint.CodeFixes/FunctionalLint.CodeFixes.csproj
+
+# Rules (or "nullable") a core may lower or suppress. Normally none.
+functional_lint.may_lower = none
+
+# Namespaces of existing imperative code, which the rules skip and cores reach only through adapters.
+functional_lint.legacy_namespaces = none
+
+# Where [ImperativeAdapter] may be used in a core.
+functional_lint.adapter_namespaces = Functional.Adapters, FunctionalLint.Adapters
+
+# What a core may reference besides the .NET base library.
+functional_lint.allowed_references = Functional, FunctionalLint, Microsoft.CodeAnalysis*, System.Collections.Immutable, System.Composition.AttributedModel
+
+# Extra side-effecting APIs to report (FP0011), on top of the built-in list.
+functional_lint.impure_apis =

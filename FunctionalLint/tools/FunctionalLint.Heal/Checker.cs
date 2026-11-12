@@ -92,12 +92,21 @@ public static class Checker
             ? (await workspace.OpenSolutionAsync(full)).Projects.ToList()
             : [await workspace.OpenProjectAsync(full)];
 
+        // A policy core counts even if it no longer loads FunctionalLint: the gate checks it, and says so.
         var functional = projects
-            .Where(p => p.AnalyzerReferences.Any(r => (r.FullPath ?? r.Display).Contains("FunctionalLint", StringComparison.OrdinalIgnoreCase)))
+            .Where(p => UsesFunctionalLint(p) || Policy.For(p)?.IsCore(p.FilePath) == true)
             .Select(p => p.Id)
             .ToList();
         return new Loaded(workspace, functional);
     }
+
+    public static bool UsesFunctionalLint(Project project) =>
+        project.AnalyzerReferences.Any(r => (r.FullPath ?? r.Display).Contains("FunctionalLint", StringComparison.OrdinalIgnoreCase));
+
+    // What the gate adds for the project as a whole, beyond its diagnostics.
+    private static IEnumerable<Diagnostic> ProjectGate(Project project) =>
+        !UsesFunctionalLint(project) && Policy.For(project) is { } policy
+        && policy.IsCore(project.FilePath) && !policy.IsGateOnly(project.FilePath) ? [Gate.MissingAnalyzer(project)] : [];
 
     /// <summary>0 clean, 1 problems, 3 nothing uses FunctionalLint.</summary>
     public static async Task<(int Code, string Report)> CheckAsync(
@@ -113,6 +122,7 @@ public static class Checker
                 .Where(d => d.Severity == DiagnosticSeverity.Error || Healer.IsOurs(d)).ToImmutableArray();
             var fixable = await Healer.FixableAsync(project, found, focus);
             remaining.AddRange(found.Select(d => (d, fixable.Contains(d))));
+            remaining.AddRange(ProjectGate(project).Select(d => (d, false)));
         }
         return Report(remaining, checkOnly: true, focus, cwd, clock, prefix: "");
     }
@@ -138,6 +148,7 @@ public static class Checker
             if (result.NotFixedBecause is { } why) notFixed.Add($"{project.Name}: not fixed, {why}");
             foreach (var (rule, n) in result.Fixed) fixedTotals[rule] = fixedTotals.GetValueOrDefault(rule) + n;
             remaining.AddRange(result.Remaining.Select(d => (d, false)));
+            remaining.AddRange(ProjectGate(project).Select(d => (d, false)));
         }
 
         if (!loaded.Workspace.TryApplyChanges(solution)) return (2, "Couldn't write the fixes to disk.\n");
@@ -216,6 +227,8 @@ public static class Checker
         var relative = span.Path is { Length: > 0 } p ? Path.GetRelativePath(cwd, p) : "";
         var file = relative.StartsWith("..", StringComparison.Ordinal) ? span.Path : relative;
         var severity = d.Severity == DiagnosticSeverity.Error ? "error" : "warning";
+        // Project-wide findings (a lowered rule, a missing import) have no file.
+        if (!d.Location.IsInSource && span.Path is not { Length: > 0 }) return $"{severity} {d.Id}: {d.GetMessage()}";
         return $"{file}({span.StartLinePosition.Line + 1},{span.StartLinePosition.Character + 1}): {severity} {d.Id}: {d.GetMessage()}";
     }
 }
