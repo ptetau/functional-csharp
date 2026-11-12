@@ -74,6 +74,8 @@ public class MessageTests
             "'Random' has side effects. Call it from an [ImperativeAdapter], or pass the value in." },
         { "FP0011", "static class C { static string M() => System.Environment.NewLine; }", null,
             "'Environment.NewLine' depends on the machine it runs on. Call it from an [ImperativeAdapter], or pass the value in." },
+        { "FP0011", "static class C { static readonly System.Text.Json.JsonSerializerOptions O = new() { WriteIndented = true }; }", null,
+            "'JsonSerializerOptions.WriteIndented' writes Environment.NewLine, which is \"\\r\\n\" on Windows. Use NewLine = \"\\n\" in the same initializer." },
         { "FP0014", "public sealed record Order(string Id, System.Collections.Immutable.ImmutableArray<string> Tags);", null,
             "'ImmutableArray<string>' compares by reference, so equal 'Order' records won't be equal. Use ValueList<T> instead." },
         { "FP0014", "public sealed record Prices(System.Collections.Immutable.ImmutableDictionary<string, decimal> BySku);", null,

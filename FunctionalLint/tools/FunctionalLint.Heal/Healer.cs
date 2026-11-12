@@ -23,7 +23,7 @@ public sealed record HealResult(Solution Solution, ImmutableSortedDictionary<str
 public static class Healer
 {
     public static readonly ImmutableArray<CodeFixProvider> Fixers =
-        [new MutableStateFix(), new ClassFix(), new ReadOnlySignatureFix(), new AsyncVoidFix()];
+        [new MutableStateFix(), new ClassFix(), new ReadOnlySignatureFix(), new AsyncVoidFix(), new NewLineFix()];
 
     // The habit that avoids each fixable rule, shown after it's been fixed.
     public static readonly ImmutableDictionary<string, string> Habits = new Dictionary<string, string>
@@ -33,6 +33,7 @@ public static class Healer
         ["FP0005"] = "Type locals as IReadOnlyList / IReadOnlyDictionary; build with ImmutableArray or ToImmutableArray().",
         ["FP0008"] = "Take and return IReadOnlyList / IReadOnlyDictionary / ImmutableArray, never List or IList.",
         ["FP0010"] = "Make async methods return Task, never void.",
+        ["FP0011"] = "When you set WriteIndented, set NewLine = \"\\n\" too, so the output is the same on every OS.",
     }.ToImmutableDictionary();
 
     private static readonly ImmutableArray<DiagnosticAnalyzer> Analyzers = [new FunctionalAnalyzer()];

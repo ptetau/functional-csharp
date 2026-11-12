@@ -104,9 +104,10 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
 
     public static readonly DiagnosticDescriptor ImpureApi = Rule("FP0011",
         "Side-effecting API",
-        "'{0}' {1}. Call it from an [ImperativeAdapter], or pass the value in.",
+        "'{0}' {1}. {2}",
         "Functions that read the clock, random numbers, the console, files or the network give different answers " +
-        "for the same input. Pass the value in as a parameter (e.g. 'DateTime now'), or wrap the API in an adapter.");
+        "for the same input. Pass the value in as a parameter (e.g. 'DateTime now'), or wrap the API in an adapter. " +
+        "Indented JSON options without 'NewLine' are reported too: they write Environment.NewLine.");
 
     public static readonly DiagnosticDescriptor IgnoredResult = Rule("FP0012",
         "Result of a pure call is ignored",
@@ -259,6 +260,7 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
             var GuardSymbol = guard.Symbol;
 
             start.RegisterOperationAction(GuardOp(AnalyzeLoop), OperationKind.Loop);
+            start.RegisterOperationAction(GuardOp(AnalyzeIndentedWriter), OperationKind.ObjectCreation);
             start.RegisterOperationAction(GuardOp(AnalyzeGoto), OperationKind.Branch);
             start.RegisterOperationAction(GuardOp(AnalyzeLoopCall), OperationKind.Invocation);
             start.RegisterOperationAction(GuardOp(AnalyzeRefArgument), OperationKind.Argument);
@@ -1032,7 +1034,42 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         var why = In(AmbientApis) ? "depends on the machine it runs on"
             : In(NondeterministicApis) ? "runs work in an unpredictable order"
             : "has side effects";
-        Report(ctx, ImpureApi, ctx.Operation.Syntax, isWholeType ? type.Name : $"{type.Name}.{member.Name}", why);
+        Report(ctx, ImpureApi, ctx.Operation.Syntax, isWholeType ? type.Name : $"{type.Name}.{member.Name}", why, ImpureRemedy);
+    }
+
+    private const string ImpureRemedy = "Call it from an [ImperativeAdapter], or pass the value in.";
+
+    // Diagnostic property telling the code fix to add `NewLine = "\n"` next to the flagged assignment.
+    public const string AddNewLineKey = "AddNewLine";
+
+    // Options whose indented output uses Environment.NewLine unless NewLine is set (.NET 9+): "\r\n" on Windows.
+    private static readonly (string Type, string Indent)[] IndentedWriters =
+    {
+        ("System.Text.Json.JsonSerializerOptions", "WriteIndented"),
+        ("System.Text.Json.JsonWriterOptions", "Indented"),
+    };
+
+    private static void AnalyzeIndentedWriter(OperationAnalysisContext ctx)
+    {
+        var creation = (IObjectCreationOperation)ctx.Operation;
+        if (creation.Type is not INamedTypeSymbol type || creation.Initializer is null) return;
+        var name = type.ToDisplayString();
+        var indent = IndentedWriters.FirstOrDefault(w => w.Type == name).Indent;
+        if (indent is null || !type.GetMembers("NewLine").Any()) return;
+
+        var assignments = creation.Initializer.Initializers.OfType<ISimpleAssignmentOperation>()
+            .Select(a => (Name: (a.Target as IPropertyReferenceOperation)?.Property.Name, Assignment: a))
+            .ToList();
+        if (assignments.Any(a => a.Name == "NewLine")) return;
+
+        var indented = assignments.FirstOrDefault(a => a.Name == indent).Assignment;
+        if (indented is null || indented.Value.ConstantValue is { HasValue: true, Value: false }) return;
+
+        ctx.ReportDiagnostic(Diagnostic.Create(ImpureApi, indented.Syntax.GetLocation(),
+            ImmutableDictionary<string, string?>.Empty.Add(AddNewLineKey, "true"),
+            $"{type.Name}.{indent}",
+            "writes Environment.NewLine, which is \"\\r\\n\" on Windows",
+            "Use NewLine = \"\\n\" in the same initializer."));
     }
 
     private sealed class ImpureApis

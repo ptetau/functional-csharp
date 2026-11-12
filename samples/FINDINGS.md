@@ -147,4 +147,4 @@ Real bugs the new rules found: a CharacterReviews page that crashed when a chara
 
 | # | Finding | Status |
 |---|---|---|
-| W1 | HighlightReel's JSON output used `\r\n` on Windows: `JsonSerializerOptions.WriteIndented` writes `Environment.NewLine` unless `NewLine` is set. FP0011 flags `Environment.NewLine` itself, but not this hidden use of it. | Fixed in the app (`NewLine = "\n"`). Linter gap open: FP0011 could flag `WriteIndented = true` without `NewLine`. |
+| W1 | HighlightReel's JSON output used `\r\n` on Windows: `JsonSerializerOptions.WriteIndented` writes `Environment.NewLine` unless `NewLine` is set. FP0011 flags `Environment.NewLine` itself, but not this hidden use of it. | Fixed in the app (`NewLine = "\n"`). FP0011 now flags indented JSON options without `NewLine`, and heal adds it. |

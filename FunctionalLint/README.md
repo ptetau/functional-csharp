@@ -16,7 +16,7 @@ A Roslyn analyzer that keeps a C# project functional. It reports errors at build
 | [FP0008](docs/rules/FP0008.md) | `IList<T>`, `ICollection<T>`, `IDictionary<,>`, `List<T>` etc. in signatures | `IReadOnlyList<T>`, `ImmutableArray<T>` | Yes |
 | [FP0009](docs/rules/FP0009.md) | Adapters with legacy types in their public signatures | Return functional types | |
 | [FP0010](docs/rules/FP0010.md) | `async void` | Return `Task` | Yes |
-| [FP0011](docs/rules/FP0011.md) | Clock, `Guid.NewGuid`, `Random`, `Console`, file I/O, `HttpClient`, current culture, parallel LINQ and similar | An adapter, or pass the value in | |
+| [FP0011](docs/rules/FP0011.md) | Clock, `Guid.NewGuid`, `Random`, `Console`, file I/O, `HttpClient`, current culture, parallel LINQ, indented JSON without `NewLine` and similar | An adapter, or pass the value in | Indented JSON |
 | [FP0012](docs/rules/FP0012.md) | Ignoring the result of `list.Add(x)`, LINQ, string, date or `Math` methods, or methods on your own records | Use the result: `var updated = list.Add(x)` | |
 | [FP0013](docs/rules/FP0013.md) | `_` arms and switch statements over enums, `closed` types and unions | A switch expression that lists every case | |
 | [FP0014](docs/rules/FP0014.md) | Collections that compare by reference (`ImmutableArray`, lists, arrays) inside records | `ValueList<T>` or another `[ValueEquality]` type | |
