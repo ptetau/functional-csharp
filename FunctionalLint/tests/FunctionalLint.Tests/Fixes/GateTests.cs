@@ -70,6 +70,20 @@ public class GateTests : IDisposable
     }
 
     [Fact]
+    public void A_policy_from_elsewhere_still_reads_paths_from_the_repository()
+    {
+        // CI saves main's policy in a temp folder and names it. Its core paths are still the repository's.
+        File.WriteAllText(Path.Combine(_folder, Policy.FileName), "functional_lint.cores = none\n");
+        var mains = Path.Combine(Directory.CreateTempSubdirectory("mains").FullName, Policy.FileName);
+        File.WriteAllText(mains, PolicyText);
+
+        var policy = Policy.For(Path.Combine(_folder, "src", "App.Core", "App.Core.csproj"), named: mains)!;
+        Assert.Equal(mains, policy.File);
+        Assert.True(policy.IsCore(Path.Combine(_folder, "src", "App.Core", "App.Core.csproj")));
+        File.Delete(mains);
+    }
+
+    [Fact]
     public async Task A_pragma_is_reported_even_when_it_also_switches_FP0016_off()
     {
         var project = await Core(new() { ["Prices.cs"] = """

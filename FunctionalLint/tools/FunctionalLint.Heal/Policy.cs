@@ -15,6 +15,7 @@ namespace FunctionalLint.Heal;
 /// </summary>
 public sealed record Policy(
     string File,
+    string Root,
     ImmutableArray<string> Cores,
     ImmutableArray<string> MayLower,
     ImmutableArray<string> LegacyNamespaces,
@@ -24,22 +25,24 @@ public sealed record Policy(
 {
     public const string FileName = "functionallint.policy";
 
-    public string Root => Path.GetDirectoryName(File)!;
-
     private static readonly ConcurrentDictionary<string, (DateTime Stamp, Policy? Policy)> Cache = new(StringComparer.Ordinal);
 
     /// <summary>The policy that governs <paramref name="path"/> (a project or source file), or null.</summary>
-    public static Policy? For(string? path)
+    public static Policy? For(string? path, string? named = null)
     {
-        var file = Environment.GetEnvironmentVariable("FUNCTIONALLINT_POLICY") is { Length: > 0 } named
-            ? Path.GetFullPath(named)
-            : path is null ? null : FindAbove(Path.GetDirectoryName(Path.GetFullPath(path))!);
+        var local = path is null ? null : FindAbove(Path.GetDirectoryName(Path.GetFullPath(path))!);
+        named ??= Environment.GetEnvironmentVariable("FUNCTIONALLINT_POLICY");
+        var file = named is { Length: > 0 } ? Path.GetFullPath(named) : local;
         if (file is null || !System.IO.File.Exists(file)) return null;
 
+        // Paths in the policy are relative to the repository: where its own copy lives, even when the rules come
+        // from another copy (CI uses main's, saved in a temp folder). Without one, the folder heal runs in.
+        var root = local is not null ? Path.GetDirectoryName(local)! : Environment.CurrentDirectory;
         var stamp = System.IO.File.GetLastWriteTimeUtc(file);
-        if (Cache.TryGetValue(file, out var cached) && cached.Stamp == stamp) return cached.Policy;
-        var policy = Parse(file, System.IO.File.ReadAllText(file));
-        Cache[file] = (stamp, policy);
+        var key = file + "|" + root;
+        if (Cache.TryGetValue(key, out var cached) && cached.Stamp == stamp) return cached.Policy;
+        var policy = Parse(file, System.IO.File.ReadAllText(file), root);
+        Cache[key] = (stamp, policy);
         return policy;
     }
 
@@ -56,7 +59,7 @@ public sealed record Policy(
     }
 
     /// <summary>Reads the globalconfig's <c>functional_lint.*</c> keys. Other keys, comments and sections are ignored.</summary>
-    public static Policy Parse(string file, string text)
+    public static Policy Parse(string file, string text, string? root = null)
     {
         var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var raw in text.Split('\n'))
@@ -72,7 +75,7 @@ public sealed record Policy(
             ? [.. value.Split(',').Select(v => v.Trim()).Where(v => v.Length > 0 && !v.Equals("none", StringComparison.OrdinalIgnoreCase))]
             : [];
 
-        return new Policy(file, List("cores"), List("may_lower"), List("legacy_namespaces"), List("adapter_namespaces"),
+        return new Policy(file, root ?? Path.GetDirectoryName(file)!, List("cores"), List("may_lower"), List("legacy_namespaces"), List("adapter_namespaces"),
             List("allowed_references"), List("impure_apis"));
     }
 

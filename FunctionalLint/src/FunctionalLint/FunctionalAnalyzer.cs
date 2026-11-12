@@ -1268,16 +1268,21 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         }
     }
 
-    // The .NET base library: assemblies from the Microsoft.NETCore.App reference pack, in a folder named after it
-    // (the SDK's packs/Microsoft.NETCore.App.Ref/11.0.0, NuGet's microsoft.netcore.app.ref/11.0.0, or an unpacked
-    // Microsoft.NETCore.App.Ref.11.0.0). Not ASP.NET Core's or Windows Desktop's packs, and not Microsoft's NuGet packages.
+    // The .NET base library: assemblies from the .NET or .NET Standard reference packs, in a folder named after the
+    // pack (the SDK's packs/Microsoft.NETCore.App.Ref/11.0.0, NuGet's microsoft.netcore.app.ref/11.0.0 or
+    // netstandard.library/2.0.3, or an unpacked Microsoft.NETCore.App.Ref.11.0.0). Not ASP.NET Core's or Windows
+    // Desktop's packs, and not Microsoft's NuGet packages.
+    private static readonly string[] BaseLibraryPacks = { "/microsoft.netcore.app.ref", "/netstandard.library" };
+
     private static bool IsDotNetBaseLibrary(MetadataReference reference)
     {
         if (reference is not PortableExecutableReference { FilePath: { } path }) return false;
-        const string pack = "/microsoft.netcore.app.ref";
         var normal = path.Replace('\\', '/');
-        var at = normal.IndexOf(pack, StringComparison.OrdinalIgnoreCase);
-        return at >= 0 && at + pack.Length < normal.Length && normal[at + pack.Length] is '/' or '.';
+        return BaseLibraryPacks.Any(pack =>
+        {
+            var at = normal.IndexOf(pack, StringComparison.OrdinalIgnoreCase);
+            return at >= 0 && at + pack.Length < normal.Length && normal[at + pack.Length] is '/' or '.';
+        });
     }
 
     // Exemptions --------------------------------------------------------------
