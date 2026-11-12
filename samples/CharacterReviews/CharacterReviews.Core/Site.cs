@@ -56,11 +56,14 @@ public static class Site
 
     /// <summary>C-5: add a review, then redirect to the character page; or show the form again with the problems.</summary>
     public static Outcome PostReview(State state, string titleSlug, string characterSlug, ReviewForm form, DateOnly today) =>
-        Library.AddReview(state, titleSlug, characterSlug, form, today).Match(
-            validated => validated.Match(
-                added => new Outcome(Option.Some(added.State), new Response.SeeOther($"/characters/{titleSlug}/{characterSlug}")),
-                errors => Unchanged(CharacterPage(state, titleSlug, characterSlug, Forms.Trimmed(form), errors, 400))),
-            error => Unchanged(NotFound(error)));
+        Library.AddReview(state, titleSlug, characterSlug, form, today) switch
+        {
+            Change<Character, Review>.Added added =>
+                new Outcome(Option.Some(added.State), new Response.SeeOther($"/characters/{titleSlug}/{characterSlug}")),
+            Change<Character, Review>.Invalid invalid =>
+                Unchanged(CharacterPage(state, titleSlug, characterSlug, Forms.Trimmed(form), invalid.Errors, 400)),
+            Change<Character, Review>.NotFound missing => Unchanged(NotFound(Library.NotFound(missing.What))),
+        };
 
     /// <summary>C-6</summary>
     public static Response NewTitle() => Ok(Html.NewTitlePage(TitleForm.Blank, []));
@@ -79,11 +82,13 @@ public static class Site
 
     /// <summary>C-7: add a character, then redirect to its page.</summary>
     public static Outcome PostCharacter(State state, string titleSlug, CharacterForm form) =>
-        Library.AddCharacter(state, titleSlug, form).Match(
-            validated => validated.Match(
-                added => new Outcome(Option.Some(added.State), new Response.SeeOther(Html.CharacterUrl(added.Item))),
-                errors => Unchanged(Queries.FindTitle(state, titleSlug).Match(
-                    title => BadRequest(Html.NewCharacterPage(title, Forms.Trimmed(form), errors)),
-                    () => NotFound("There's no title at this address.")))),
-            error => Unchanged(NotFound(error)));
+        Library.AddCharacter(state, titleSlug, form) switch
+        {
+            Change<Title, Character>.Added added =>
+                new Outcome(Option.Some(added.State), new Response.SeeOther(Html.CharacterUrl(added.Item))),
+            // The change hands back the title it found, so the form can be shown again without looking it up twice.
+            Change<Title, Character>.Invalid invalid =>
+                Unchanged(BadRequest(Html.NewCharacterPage(invalid.Parent, Forms.Trimmed(form), invalid.Errors))),
+            Change<Title, Character>.NotFound missing => Unchanged(NotFound(Library.NotFound(missing.What))),
+        };
 }

@@ -12,6 +12,20 @@ public class CoreTests
 
     // ---- Helpers: run a transition and insist it worked ----
 
+    // For changes to an existing title or character: Ok checks the parent was found, Valid that it was added,
+    // Errors that the form was refused.
+    private static Change<TParent, T> Ok<TParent, T>(Change<TParent, T> change)
+    {
+        Assert.IsNotType<Change<TParent, T>.NotFound>(change);
+        return change;
+    }
+
+    private static Change<TParent, T>.Added Valid<TParent, T>(Change<TParent, T> change) =>
+        Assert.IsType<Change<TParent, T>.Added>(change);
+
+    private static ValueList<FieldError> Errors<TParent, T>(Change<TParent, T> change) =>
+        Assert.IsType<Change<TParent, T>.Invalid>(change).Errors;
+
     private static T Valid<T>(Validation<FieldError, T> v) =>
         v.Match(x => x, errors => throw new Xunit.Sdk.XunitException("Expected valid, got: " + string.Join("; ", errors)));
 
@@ -212,7 +226,7 @@ public class CoreTests
     {
         var ok = Library.AddReview(Arrival(), "arrival", "louise-banks", new ReviewForm(new string('a', 40), "3", ""), Day1);
         var tooLong = Library.AddReview(Arrival(), "arrival", "louise-banks", new ReviewForm(new string('a', 41), "3", ""), Day1);
-        Assert.True(Ok(ok).Match(_ => true, _ => false));
+        Assert.IsType<Change<Character, Review>.Added>(ok);
         Assert.Equal<FieldError>([new FieldError("reviewer", "Name must be at most 40 characters")], Errors(Ok(tooLong)));
     }
 
@@ -221,7 +235,7 @@ public class CoreTests
     {
         var ok = Library.AddReview(Arrival(), "arrival", "louise-banks", new ReviewForm("Sam", "3", new string('x', 2000)), Day1);
         var tooLong = Library.AddReview(Arrival(), "arrival", "louise-banks", new ReviewForm("Sam", "3", new string('x', 2001)), Day1);
-        Assert.True(Ok(ok).Match(_ => true, _ => false));
+        Assert.IsType<Change<Character, Review>.Added>(ok);
         Assert.Equal("text", Assert.Single(Errors(Ok(tooLong))).Field);
     }
 
@@ -292,7 +306,7 @@ public class CoreTests
 
     [Fact]
     public void C7_character_for_unknown_title_is_not_found() =>
-        Assert.False(Library.AddCharacter(State.Empty, "nope", new CharacterForm("A", "")).IsOk);
+        Assert.IsType<Change<Title, Character>.NotFound>(Library.AddCharacter(State.Empty, "nope", new CharacterForm("A", "")));
 
     // ---- C-1, C-10: home page ----
 

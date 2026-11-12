@@ -72,6 +72,17 @@ public static class Validation
         Func<T1, T2, T3, T4, TOut> f) =>
         Combine(Combine(a, b, c, (x, y, z) => (x, y, z)), d, (xyz, w) => f(xyz.x, xyz.y, xyz.z, w));
 
+    public static Validation<TError, TOut> Combine<TError, T1, T2, T3, T4, T5, TOut>(
+        Validation<TError, T1> a, Validation<TError, T2> b, Validation<TError, T3> c, Validation<TError, T4> d,
+        Validation<TError, T5> e, Func<T1, T2, T3, T4, T5, TOut> f) =>
+        Combine(Combine(a, b, c, d, (w, x, y, z) => (w, x, y, z)), e, (wxyz, v) => f(wxyz.w, wxyz.x, wxyz.y, wxyz.z, v));
+
+    public static Validation<TError, TOut> Combine<TError, T1, T2, T3, T4, T5, T6, TOut>(
+        Validation<TError, T1> a, Validation<TError, T2> b, Validation<TError, T3> c, Validation<TError, T4> d,
+        Validation<TError, T5> e, Validation<TError, T6> g, Func<T1, T2, T3, T4, T5, T6, TOut> f) =>
+        Combine(Combine(a, b, c, (u, v, w) => (u, v, w)), Combine(d, e, g, (x, y, z) => (x, y, z)),
+            (uvw, xyz) => f(uvw.u, uvw.v, uvw.w, xyz.x, xyz.y, xyz.z));
+
     /// <summary>All the values, or every error from every item.</summary>
     public static Validation<TError, ValueList<T>> All<TError, T>(this IEnumerable<Validation<TError, T>> items)
     {
