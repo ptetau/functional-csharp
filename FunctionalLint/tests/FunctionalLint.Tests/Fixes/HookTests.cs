@@ -29,7 +29,7 @@ public class HookTests
     [Fact]
     public void Finds_the_nearest_project_above_the_file()
     {
-        var root = Directory.CreateTempSubdirectory("hook").FullName;
+        var root = TempFolder.Create("hook");
         try
         {
             Directory.CreateDirectory(Path.Combine(root, "Core", "Domain"));

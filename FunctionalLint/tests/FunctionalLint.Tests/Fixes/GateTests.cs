@@ -14,7 +14,7 @@ namespace FunctionalLint.Tests.Fixes;
 /// <summary>The strict gate: what heal reports under a functionallint.policy, beyond the build.</summary>
 public class GateTests : IDisposable
 {
-    private readonly string _folder = Directory.CreateTempSubdirectory("gate").FullName;
+    private readonly string _folder = TempFolder.Create("gate");
 
     public void Dispose() => Directory.Delete(_folder, recursive: true);
 
@@ -77,7 +77,7 @@ public class GateTests : IDisposable
     {
         // CI saves main's policy in a temp folder and names it. Its core paths are still the repository's.
         File.WriteAllText(Path.Combine(_folder, Policy.FileName), "functional_lint.cores = none\n");
-        var mains = Path.Combine(Directory.CreateTempSubdirectory("mains").FullName, Policy.FileName);
+        var mains = Path.Combine(TempFolder.Create("mains"), Policy.FileName);
         File.WriteAllText(mains, PolicyText);
 
         var policy = Policy.For(Path.Combine(_folder, "src", "App.Core", "App.Core.csproj"), named: mains)!;
