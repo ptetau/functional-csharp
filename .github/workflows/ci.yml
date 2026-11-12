@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch or PR replaces a run still in progress.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      DOTNET_NOLOGO: "1"
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      # The SDK version comes from global.json (.NET 11, C# 15).
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Linter tests
+        run: dotnet test FunctionalLint
+
+      - name: Sample app and library tests
+        run: dotnet test samples/Samples.slnx
+
+      # The heal tool end to end, the way a person or an agent runs it.
+      - name: heal.sh --check on a sample core
+        shell: bash
+        env:
+          FUNCTIONALLINT_NO_SERVER: "1"
+        run: FunctionalLint/heal.sh samples/Ledger/Ledger.Core/Ledger.Core.csproj --check
+
+      - name: Pack the NuGet package
+        run: dotnet pack FunctionalLint/src/FunctionalLint.Package -c Release -o artifacts

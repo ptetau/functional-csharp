@@ -204,6 +204,8 @@ Other agents can use the same check: `dotnet FunctionalLint/tools/FunctionalLint
 dotnet test
 ```
 
+CI (`.github/workflows/ci.yml`) runs these tests and the sample apps' tests on Linux, macOS and Windows for every pull request and every push to `main`. It also runs `heal.sh --check` on a sample project and packs the NuGet package.
+
 The tests are laid out so it's clear where a new case goes:
 
 | Folder | Checks |
