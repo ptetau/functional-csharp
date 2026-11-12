@@ -1296,10 +1296,11 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
     {
         if (PolicyList(ctx.Options.AnalyzerConfigOptionsProvider.GlobalOptions, AllowedReferencesKey) is not { } allowed) return;
 
+        var coreFolder = BaseLibraryFolder(ctx.Compilation);
         foreach (var reference in ctx.Compilation.References)
         {
-            if (IsDotNetBaseLibrary(reference)) continue;
             if (ctx.Compilation.GetAssemblyOrModuleSymbol(reference) is not IAssemblySymbol assembly) continue;
+            if (IsDotNetBaseLibrary(reference, assembly, coreFolder)) continue;
             var name = assembly.Identity.Name;
             if (allowed.Any(a => a.EndsWith("*", StringComparison.Ordinal)
                     ? name.StartsWith(a.Substring(0, a.Length - 1), StringComparison.OrdinalIgnoreCase)
@@ -1308,21 +1309,47 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         }
     }
 
-    // The .NET base library: assemblies from the .NET or .NET Standard reference packs, in a folder named after the
-    // pack (the SDK's packs/Microsoft.NETCore.App.Ref/11.0.0, NuGet's microsoft.netcore.app.ref/11.0.0 or
-    // netstandard.library/2.0.3, or an unpacked Microsoft.NETCore.App.Ref.11.0.0). Not ASP.NET Core's or Windows
-    // Desktop's packs, and not Microsoft's NuGet packages.
+    // The .NET base library: assemblies from the .NET or .NET Standard reference pack the project compiles against.
+    // Three things must hold, so copying a library into a folder with the right name isn't enough:
+    // - the folder is named after the pack (the SDK's packs/Microsoft.NETCore.App.Ref/11.0.0, NuGet's
+    //   microsoft.netcore.app.ref/11.0.0 or netstandard.library/2.0.3, or an unpacked Microsoft.NETCore.App.Ref.11.0.0);
+    // - it's the same folder as the assembly that defines System.Object, so the pack really is the base library;
+    // - the assembly is signed with one of the keys .NET's own assemblies use.
+    // Not ASP.NET Core's or Windows Desktop's packs (another folder), and not Microsoft's NuGet packages.
     private static readonly string[] BaseLibraryPacks = { "/microsoft.netcore.app.ref", "/netstandard.library" };
 
-    private static bool IsDotNetBaseLibrary(MetadataReference reference)
+    // Public key tokens of the assemblies in the .NET and .NET Standard reference packs (Microsoft, ECMA, .NET Core,
+    // the Silverlight-era key some facades keep, and the Microsoft.Extensions key the .NET 11 pack includes).
+    private static readonly string[] BaseLibraryKeys =
+        { "b03f5f7f11d50a3a", "b77a5c561934e089", "cc7b13ffcd2ddd51", "31bf3856ad364e35", "adb9793829ddae60" };
+
+    private static string? BaseLibraryFolder(Compilation compilation) =>
+        compilation.GetSpecialType(SpecialType.System_Object).ContainingAssembly is { } core
+        && compilation.GetMetadataReference(core) is PortableExecutableReference { FilePath: { } path } && IsInBaseLibraryPack(path)
+            ? Folder(path) : null;
+
+    private static bool IsDotNetBaseLibrary(MetadataReference reference, IAssemblySymbol assembly, string? coreFolder)
     {
-        if (reference is not PortableExecutableReference { FilePath: { } path }) return false;
+        if (coreFolder is null || reference is not PortableExecutableReference { FilePath: { } path }) return false;
+        var token = string.Concat(assembly.Identity.PublicKeyToken.Select(b => b.ToString("x2", System.Globalization.CultureInfo.InvariantCulture)));
+        return string.Equals(Folder(path), coreFolder, StringComparison.OrdinalIgnoreCase)
+            && BaseLibraryKeys.Contains(token, StringComparer.Ordinal);
+    }
+
+    private static bool IsInBaseLibraryPack(string path)
+    {
         var normal = path.Replace('\\', '/');
         return BaseLibraryPacks.Any(pack =>
         {
             var at = normal.IndexOf(pack, StringComparison.OrdinalIgnoreCase);
             return at >= 0 && at + pack.Length < normal.Length && normal[at + pack.Length] is '/' or '.';
         });
+    }
+
+    private static string Folder(string path)
+    {
+        var normal = path.Replace('\\', '/');
+        return normal.Substring(0, Math.Max(normal.LastIndexOf('/'), 0));
     }
 
     // Exemptions --------------------------------------------------------------
