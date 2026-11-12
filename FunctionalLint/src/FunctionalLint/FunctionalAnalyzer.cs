@@ -169,6 +169,7 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         ("System.Collections.Concurrent.ConcurrentQueue`1", "ImmutableQueue<T>"),
         ("System.Collections.Concurrent.ConcurrentStack`1", "ImmutableStack<T>"),
         ("System.Collections.Concurrent.ConcurrentBag`1", "ImmutableArray<T>"),
+        ("System.Collections.Generic.PriorityQueue`2", "ImmutableSortedSet<T>, or an ImmutableList kept in order"),
         ("System.Collections.ObjectModel.Collection`1", "ImmutableArray<T>"),
         ("System.Collections.ObjectModel.ObservableCollection`1", "ImmutableArray<T>"),
         ("System.Collections.ArrayList", "ImmutableArray<T>"),
@@ -204,7 +205,8 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         "System.DateTime.Now", "System.DateTime.UtcNow", "System.DateTime.Today",
         "System.DateTimeOffset.Now", "System.DateTimeOffset.UtcNow",
         "System.TimeProvider.System",
-        "System.Guid.NewGuid",
+        "System.Guid.NewGuid", "System.Guid.CreateVersion7",
+        "System.IO.Path.GetTempFileName", "System.IO.Path.GetRandomFileName",
         "System.Random",
         "System.Security.Cryptography.RandomNumberGenerator",
         "System.Console",
@@ -245,39 +247,44 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         context.ConfigureGeneratedCodeAnalysis(GeneratedCodeAnalysisFlags.None);
         context.EnableConcurrentExecution();
 
-        // GuardOp / GuardSymbol skip adapters and legacy namespaces.
-        context.RegisterOperationAction(GuardOp(AnalyzeLoop), OperationKind.Loop);
-        context.RegisterOperationAction(GuardOp(AnalyzeGoto), OperationKind.Branch);
-        context.RegisterOperationAction(GuardOp(AnalyzeLoopCall), OperationKind.Invocation);
-        context.RegisterOperationAction(GuardOp(AnalyzeRefArgument), OperationKind.Argument);
-        context.RegisterOperationAction(GuardOp(AnalyzeMutatingCall), OperationKind.Invocation);
-        context.RegisterOperationAction(GuardOp(AnalyzeThrowingCall), OperationKind.Invocation, OperationKind.PropertyReference);
-        context.RegisterSymbolAction(GuardSymbol(AnalyzeRecordEquality), SymbolKind.NamedType);
-        context.RegisterOperationAction(GuardOp(AnalyzeAssignment),
-            OperationKind.SimpleAssignment,
-            OperationKind.CompoundAssignment,
-            OperationKind.CoalesceAssignment,
-            OperationKind.DeconstructionAssignment);
-        context.RegisterOperationAction(GuardOp(AnalyzeIncrement), OperationKind.Increment, OperationKind.Decrement);
-        context.RegisterOperationAction(GuardOp(AnalyzeEventAssignment), OperationKind.EventAssignment);
-        context.RegisterOperationAction(GuardOp(AnalyzeBoundary), ReferenceKinds);
-        context.RegisterOperationAction(GuardOp(AnalyzeThrow), OperationKind.Throw);
-        context.RegisterOperationAction(GuardOp(AnalyzeIgnoredResult), OperationKind.ExpressionStatement);
-        context.RegisterOperationAction(GuardOp(AnalyzeSwitchExpression), OperationKind.SwitchExpression);
-        context.RegisterOperationAction(GuardOp(AnalyzeSwitchStatement), OperationKind.Switch);
-        context.RegisterOperationAction(GuardOp(AnalyzeAsyncVoidFunction),
-            OperationKind.AnonymousFunction, OperationKind.LocalFunction);
-
-        context.RegisterSymbolAction(GuardSymbol(AnalyzeField), SymbolKind.Field);
-        context.RegisterSymbolAction(GuardSymbol(AnalyzeProperty), SymbolKind.Property);
-        context.RegisterSymbolAction(GuardSymbol(AnalyzeType), SymbolKind.NamedType);
-        context.RegisterSymbolAction(GuardSymbol(AnalyzeAsyncVoidMethod), SymbolKind.Method);
-
         // Runs only on adapters, so it is deliberately not guarded.
         context.RegisterSymbolAction(AnalyzeAdapterSignature, SymbolKind.Method, SymbolKind.Property, SymbolKind.Field);
 
         context.RegisterCompilationStartAction(start =>
         {
+            // The guard skips adapters and legacy namespaces. It caches per compilation, so that work isn't
+            // repeated for each of the many operations every rule looks at.
+            var guard = new Guard();
+            var GuardOp = guard.Op;
+            var GuardSymbol = guard.Symbol;
+
+            start.RegisterOperationAction(GuardOp(AnalyzeLoop), OperationKind.Loop);
+            start.RegisterOperationAction(GuardOp(AnalyzeGoto), OperationKind.Branch);
+            start.RegisterOperationAction(GuardOp(AnalyzeLoopCall), OperationKind.Invocation);
+            start.RegisterOperationAction(GuardOp(AnalyzeRefArgument), OperationKind.Argument);
+            start.RegisterOperationAction(GuardOp(AnalyzeMutatingCall), OperationKind.Invocation);
+            start.RegisterOperationAction(GuardOp(AnalyzeThrowingCall), OperationKind.Invocation, OperationKind.PropertyReference);
+            start.RegisterSymbolAction(GuardSymbol(AnalyzeRecordEquality), SymbolKind.NamedType);
+            start.RegisterOperationAction(GuardOp(AnalyzeAssignment),
+                OperationKind.SimpleAssignment,
+                OperationKind.CompoundAssignment,
+                OperationKind.CoalesceAssignment,
+                OperationKind.DeconstructionAssignment);
+            start.RegisterOperationAction(GuardOp(AnalyzeIncrement), OperationKind.Increment, OperationKind.Decrement);
+            start.RegisterOperationAction(GuardOp(AnalyzeEventAssignment), OperationKind.EventAssignment);
+            start.RegisterOperationAction(GuardOp(AnalyzeBoundary), ReferenceKinds);
+            start.RegisterOperationAction(GuardOp(AnalyzeThrow), OperationKind.Throw);
+            start.RegisterOperationAction(GuardOp(AnalyzeIgnoredResult), OperationKind.ExpressionStatement);
+            start.RegisterOperationAction(GuardOp(AnalyzeSwitchExpression), OperationKind.SwitchExpression);
+            start.RegisterOperationAction(GuardOp(AnalyzeSwitchStatement), OperationKind.Switch);
+            start.RegisterOperationAction(GuardOp(AnalyzeAsyncVoidFunction),
+                OperationKind.AnonymousFunction, OperationKind.LocalFunction);
+
+            start.RegisterSymbolAction(GuardSymbol(AnalyzeField), SymbolKind.Field);
+            start.RegisterSymbolAction(GuardSymbol(AnalyzeProperty), SymbolKind.Property);
+            start.RegisterSymbolAction(GuardSymbol(AnalyzeType), SymbolKind.NamedType);
+            start.RegisterSymbolAction(GuardSymbol(AnalyzeAsyncVoidMethod), SymbolKind.Method);
+
             var compilation = start.Compilation;
             var mutableTypes = Resolve(compilation, MutableTypes);
             var inSignatures = Resolve(compilation, MutableTypes.Concat(MutableInterfaces).Concat(SignatureAlternatives));
@@ -681,13 +688,19 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         var op = (ISwitchExpressionOperation)ctx.Operation;
         if (op.Value.Type is not { } type || CheckedKind(type) is null) return;
 
-        // An unguarded arm that matches anything: `_`, `var x`, or the input's own type.
+        // An unguarded arm that matches anything left: `_`, `var x`, the input's own type, `{ }` or `not null`.
+        var underlying = Unwrapped(type);
+        bool IsInput(ITypeSymbol? matched) =>
+            SymbolEqualityComparer.Default.Equals(matched, type) || SymbolEqualityComparer.Default.Equals(matched, underlying);
         var catchAll = op.Arms.FirstOrDefault(arm => arm.Guard is null && arm.Pattern switch
         {
             IDiscardPatternOperation => true,
             IDeclarationPatternOperation { MatchesNull: true } => true,
-            IDeclarationPatternOperation declaration => SymbolEqualityComparer.Default.Equals(declaration.MatchedType, type),
-            ITypePatternOperation typePattern => SymbolEqualityComparer.Default.Equals(typePattern.MatchedType, type),
+            IDeclarationPatternOperation declaration => IsInput(declaration.MatchedType),
+            ITypePatternOperation typePattern => IsInput(typePattern.MatchedType),
+            IRecursivePatternOperation { DeconstructionSubpatterns.IsEmpty: true, PropertySubpatterns.IsEmpty: true } recursive =>
+                recursive.MatchedType is null || IsInput(recursive.MatchedType),
+            INegatedPatternOperation { Pattern: IConstantPatternOperation { Value.ConstantValue: { HasValue: true, Value: null } } } => true,
             _ => false,
         });
         if (catchAll is null) return;
@@ -708,12 +721,16 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
             "Use a switch expression instead."));
     }
 
+    // `Colour?` is checked like `Colour`.
+    private static ITypeSymbol Unwrapped(ITypeSymbol type) =>
+        type is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } nullable ? nullable.TypeArguments[0] : type;
+
     // Types whose switch expressions the compiler checks for missing cases, or null.
-    private static string? CheckedKind(ITypeSymbol type) => type switch
+    private static string? CheckedKind(ITypeSymbol type) => Unwrapped(type) switch
     {
         INamedTypeSymbol { TypeKind: TypeKind.Enum } e when !e.GetAttributes().Any(a => a.AttributeClass?.Name == "FlagsAttribute") => "enum",
-        _ when type.AllInterfaces.Any(i => i.ToDisplayString() == "System.Runtime.CompilerServices.IUnion") => "union",
-        _ when IsClosed(type) => "closed type",
+        var t when t.AllInterfaces.Any(i => i.ToDisplayString() == "System.Runtime.CompilerServices.IUnion") => "union",
+        var t when IsClosed(t) => "closed type",
         _ => null,
     };
 
@@ -833,7 +850,7 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         }
 
         if (owner is "System.Collections.Immutable.ImmutableDictionary" or "System.Collections.Immutable.ImmutableSortedDictionary"
-            && name.StartsWith("ToImmutable", StringComparison.Ordinal) && !HasUniqueKeys(op))
+            && name.StartsWith("ToImmutable", StringComparison.Ordinal) && !HasUniqueKeys(op) && !CopiesADictionary(op))
             return (name, "two items have the same key", "GroupBy on the key first, or ToLookup");
 
         if (owner is "System.Collections.Immutable.ImmutableDictionary<TKey, TValue>"
@@ -846,7 +863,7 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
             && method.ContainingType.ContainingNamespace?.ToDisplayString() == "System")
             return ($"{Display(method.ContainingType)}.{name}", "the text isn't valid", $"{Display(method.ContainingType)}.TryParse");
 
-        if (owner == "System.Convert" && name.StartsWith("To", StringComparison.Ordinal)
+        if (owner == "System.Convert" && name.StartsWith("To", StringComparison.Ordinal) && name != "ToString"
             && method.Parameters.FirstOrDefault()?.Type.SpecialType == SpecialType.System_String)
             return ($"Convert.{name}", "the text isn't valid", "the target type's TryParse");
 
@@ -918,6 +935,19 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
                 .Any(i => i.OriginalDefinition.ToDisplayString() == "System.Linq.IGrouping<TKey, TElement>");
     }
 
+    // `readOnlyDictionary.ToImmutableDictionary()` copies keys that are already unique, unless a new key selector
+    // or comparer could make two of them collide.
+    private static bool CopiesADictionary(IInvocationOperation op)
+    {
+        var source = op.Arguments.FirstOrDefault()?.Value;
+        while (source is IConversionOperation conversion) source = conversion.Operand;
+        var isDictionary = source?.Type is { } type && type.AllInterfaces.Concat(type is INamedTypeSymbol n ? [n] : [])
+            .Any(i => i.OriginalDefinition.ToDisplayString() is "System.Collections.Generic.IReadOnlyDictionary<TKey, TValue>"
+                or "System.Collections.Generic.IDictionary<TKey, TValue>");
+        return isDictionary && op.TargetMethod.Parameters.Skip(1).All(p => p.Type.TypeKind != TypeKind.Delegate
+            && !p.Type.OriginalDefinition.ToDisplayString().StartsWith("System.Collections.Generic.IEqualityComparer", StringComparison.Ordinal));
+    }
+
     private static bool SourceIs(IInvocationOperation op, params string[] methods)
     {
         var source = op.Arguments.FirstOrDefault()?.Value;
@@ -978,9 +1008,12 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         if (type.SpecialType == SpecialType.System_String) return true;
         if (type.ToDisplayString() == "System.Math") return true;
 
-        // Your own records and readonly structs (and ones from libraries): their methods return new values.
+        // Records (yours or a library's), and readonly structs that are yours or marked [ValueEquality]: their methods
+        // return new values. Other libraries' readonly structs can still do things (`CancellationToken.Register`).
         // A method with out or ref parameters hands back results that way, so its return value may be optional.
-        if ((type.IsRecord || (type.IsValueType && type.IsReadOnly)) && !method.IsStatic
+        var pureStruct = type.IsValueType && type.IsReadOnly
+            && (type.Locations.Any(l => l.IsInSource) || type.GetAttributes().Any(a => a.AttributeClass?.Name == "ValueEqualityAttribute"));
+        if ((type.IsRecord || pureStruct) && !method.IsStatic
             && method.Parameters.All(p => p.RefKind is RefKind.None or RefKind.In)) return true;
 
         return PureValueTypes.Contains(type.OriginalDefinition.ToDisplayString());
@@ -1034,19 +1067,48 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
 
     // Exemptions --------------------------------------------------------------
 
-    private static Action<OperationAnalysisContext> GuardOp(Action<OperationAnalysisContext> rule) => ctx =>
+    // Decides, once per file and once per symbol in each compilation, whether the rules apply.
+    private sealed class Guard
     {
-        var legacy = LegacyNamespaces(ctx.Options, ctx.Operation.Syntax.SyntaxTree);
-        if (!IsExempt(ctx.ContainingSymbol, legacy)) rule(ctx);
-    };
+        private readonly ConcurrentDictionary<SyntaxTree, ImmutableArray<string>> _legacy = new();
+        private readonly ConcurrentDictionary<ISymbol, bool> _exempt = new(SymbolEqualityComparer.Default);
 
-    private static Action<SymbolAnalysisContext> GuardSymbol(Action<SymbolAnalysisContext> rule) => ctx =>
-    {
-        var tree = ctx.Symbol.Locations.FirstOrDefault(l => l.IsInSource)?.SourceTree;
-        if (tree is null) return;
-        var legacy = LegacyNamespaces(ctx.Options, tree);
-        if (!IsExempt(ctx.Symbol, legacy)) rule(ctx);
-    };
+        public Action<OperationAnalysisContext> Op(Action<OperationAnalysisContext> rule) => ctx =>
+        {
+            if (!Exempt(ctx.ContainingSymbol, ctx.Options, ctx.Operation.Syntax.SyntaxTree) && !InAdapterFunction(ctx.Operation))
+                rule(ctx);
+        };
+
+        public Action<SymbolAnalysisContext> Symbol(Action<SymbolAnalysisContext> rule) => ctx =>
+        {
+            var tree = ctx.Symbol.Locations.FirstOrDefault(l => l.IsInSource)?.SourceTree;
+            if (tree is not null && !Exempt(ctx.Symbol, ctx.Options, tree)) rule(ctx);
+        };
+
+        private bool Exempt(ISymbol symbol, AnalyzerOptions options, SyntaxTree tree)
+        {
+            var legacy = _legacy.GetOrAdd(tree, t => LegacyNamespaces(options, t));
+            return _exempt.GetOrAdd(symbol, s => IsExempt(s, legacy));
+        }
+
+        // An operation inside a local function or lambda marked [ImperativeAdapter]. (Its ContainingSymbol is
+        // the enclosing method, so the symbol check above can't see the attribute.)
+        private static bool InAdapterFunction(IOperation operation)
+        {
+            // Start at the operation itself: a marked local function's own declaration is exempt too (FP0010).
+            for (var current = operation; current is not null; current = current.Parent)
+            {
+                var function = current switch
+                {
+                    ILocalFunctionOperation local => local.Symbol,
+                    IAnonymousFunctionOperation lambda => lambda.Symbol,
+                    _ => null,
+                };
+                if (function is not null && HasAdapterAttribute(function)) return true;
+            }
+            return false;
+        }
+    }
 
     private static bool IsExempt(ISymbol symbol, ImmutableArray<string> legacy) =>
         IsInAdapter(symbol) || IsInNamespaces(symbol, legacy);

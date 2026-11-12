@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Diagnostics;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.MSBuild;
@@ -9,8 +10,73 @@ public static class Checker
 {
     private const string DocsHint = "Each message says what to write instead. Rule docs with examples: FunctionalLint/docs/rules/<ID>.md";
 
-    /// <summary>A loaded project or solution, with the projects that use FunctionalLint.</summary>
-    public sealed record Loaded(MSBuildWorkspace Workspace, IReadOnlyList<ProjectId> Functional);
+    /// <summary>A loaded project or solution, with the projects that use FunctionalLint, and anything to tell the user.</summary>
+    public sealed record Loaded(MSBuildWorkspace Workspace, IReadOnlyList<ProjectId> Functional, string? Note = null);
+
+    /// <summary>
+    /// Loads a project together with the projects that depend on it: the nearest solution above it that lists it.
+    /// Fixes are then checked against the dependents too (turning `set` into `init` compiles in a project but breaks
+    /// a host that sets the property). Only the requested project is checked or fixed. Without such a solution, the
+    /// project is loaded alone and the result carries a note saying dependents weren't checked.
+    /// </summary>
+    public static async Task<Loaded> LoadWithDependentsAsync(string path)
+    {
+        var full = Path.GetFullPath(path);
+        if (!full.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase)) return await LoadAsync(full);
+
+        const string unchecked_ = "so projects that depend on it weren't checked. Heal the solution instead to be sure a fix doesn't break them.";
+        if (SolutionListing(full) is { } solution)
+        {
+            var loaded = await LoadAsync(solution);
+            var only = loaded.Functional
+                .Where(id => loaded.Workspace.CurrentSolution.GetProject(id)?.FilePath is { } file && SamePath(file, full))
+                .ToList();
+            if (only.Count > 0) return loaded with { Functional = only };
+            loaded.Workspace.Dispose();
+        }
+
+        var alone = await LoadAsync(full);
+        return alone with { Note = $"No solution file above {Path.GetFileName(full)} lists it, {unchecked_}" };
+    }
+
+    // File systems on Windows and macOS ignore case by default; Linux's don't.
+    private static readonly StringComparison PathComparison =
+        OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+
+    private static bool SamePath(string a, string b) => string.Equals(Path.GetFullPath(a), Path.GetFullPath(b), PathComparison);
+
+    // The nearest .sln or .slnx at or above the project's folder that lists this exact project.
+    private static string? SolutionListing(string project)
+    {
+        for (var dir = new DirectoryInfo(Path.GetDirectoryName(project)!); dir is not null; dir = dir.Parent)
+        {
+            var match = dir.EnumerateFiles("*.sln").Concat(dir.EnumerateFiles("*.slnx"))
+                .FirstOrDefault(f => ProjectsIn(f.FullName).Any(listed => SamePath(listed, project)));
+            if (match is not null) return match.FullName;
+        }
+        return null;
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex SlnProjectLine =
+        new("^Project\\(\"[^\"]*\"\\)\\s*=\\s*\"[^\"]*\",\\s*\"([^\"]+)\"", System.Text.RegularExpressions.RegexOptions.Multiline);
+
+    // The full paths of the projects a solution lists.
+    private static IEnumerable<string> ProjectsIn(string solution)
+    {
+        var folder = Path.GetDirectoryName(solution)!;
+        try
+        {
+            var relative = solution.EndsWith(".slnx", StringComparison.OrdinalIgnoreCase)
+                ? System.Xml.Linq.XDocument.Load(solution).Descendants()
+                    .Where(e => e.Name.LocalName == "Project").Select(e => e.Attribute("Path")?.Value).OfType<string>()
+                : SlnProjectLine.Matches(File.ReadAllText(solution)).Select(m => m.Groups[1].Value);
+            return relative.Select(r => Path.GetFullPath(r.Replace('\\', Path.DirectorySeparatorChar), folder)).ToList();
+        }
+        catch (Exception e) when (e is IOException or System.Xml.XmlException or UnauthorizedAccessException)
+        {
+            return [];
+        }
+    }
 
     /// <summary>The projects in <paramref name="path"/> that reference FunctionalLint. Host, test and adapter projects are left alone, as at build time.</summary>
     public static async Task<Loaded> LoadAsync(string path)
@@ -43,9 +109,10 @@ public static class Checker
         foreach (var id in functional)
         {
             var project = Healer.UseNewestLanguage(solution.GetProject(id)!);
-            var found = await Healer.DiagnoseAsync(project);
-            foreach (var d in found.Where(d => d.Severity == DiagnosticSeverity.Error || Healer.IsOurs(d)))
-                remaining.Add((d, await Healer.IsFixableAsync(project, d)));
+            var found = (await Healer.DiagnoseAsync(project))
+                .Where(d => d.Severity == DiagnosticSeverity.Error || Healer.IsOurs(d)).ToImmutableArray();
+            var fixable = await Healer.FixableAsync(project, found, focus);
+            remaining.AddRange(found.Select(d => (d, fixable.Contains(d))));
         }
         return Report(remaining, checkOnly: true, focus, cwd, clock, prefix: "");
     }
@@ -76,6 +143,7 @@ public static class Checker
         if (!loaded.Workspace.TryApplyChanges(solution)) return (2, "Couldn't write the fixes to disk.\n");
 
         var header = new StringWriter();
+        if (loaded.Note is { } note) header.WriteLine("note: " + note);
         header.WriteLine("== Auto-fixed");
         notFixed.ForEach(line => header.WriteLine("  " + line));
         if (fixedTotals.Count == 0 && notFixed.Count == 0) header.WriteLine("  nothing");
@@ -98,7 +166,8 @@ public static class Checker
             .ThenBy(r => r.Diagnostic.Location.SourceTree?.FilePath, StringComparer.Ordinal)
             .ThenBy(r => r.Diagnostic.Location.SourceSpan.Start)
             .Select(r => (Line: Format(r.Diagnostic, cwd) + (r.Fixable ? " [auto-fixable]" : ""), r.Fixable,
-                          InFocus: r.Diagnostic.Location.SourceTree?.FilePath == focus, IsOurs: Healer.IsOurs(r.Diagnostic)))
+                          InFocus: r.Diagnostic.Location.SourceTree?.FilePath == focus, IsOurs: Healer.IsOurs(r.Diagnostic),
+                          IsError: r.Diagnostic.Severity == DiagnosticSeverity.Error))
             .DistinctBy(r => r.Line)
             .ToList();
 
@@ -114,6 +183,11 @@ public static class Checker
             // An agent wants the file it just touched; cap the rest so the message stays readable.
             var here = ordered.Where(r => r.InFocus).ToList();
             var elsewhere = ordered.Where(r => !r.InFocus).ToList();
+
+            // Only fail the edit for the file just touched, or for errors elsewhere. Warnings elsewhere (a rule
+            // lowered to "warning" while migrating) don't fail the build, so they mustn't fail every edit either.
+            if (here.Count == 0 && !elsewhere.Any(r => r.IsError))
+                return (0, report.ToString());
             report.WriteLine($"FunctionalLint: {here.Count} problem(s) in {Path.GetFileName(focus)}, {elsewhere.Count} elsewhere in the project.");
             here.ForEach(r => report.WriteLine(r.Line));
             elsewhere.Take(10).ToList().ForEach(r => report.WriteLine(r.Line));

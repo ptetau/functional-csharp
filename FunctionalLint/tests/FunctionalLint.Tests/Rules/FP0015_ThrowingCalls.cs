@@ -120,3 +120,34 @@ public class FP0015_ThrowingCalls
         }
         """);
 }
+
+public class FP0015_MoreSafeCalls
+{
+    [Fact]
+    public Task Calls_that_cannot_throw_here_are_allowed() => Verify("""
+        using System.Collections.Generic;
+        using System.Collections.Immutable;
+        using System.Globalization;
+
+        static class C
+        {
+            static void M(string s, IReadOnlyDictionary<string, int> d)
+            {
+                var a = System.Convert.ToString(s, CultureInfo.InvariantCulture);
+                var b = d.ToImmutableDictionary();
+            }
+        }
+        """);
+
+    [Fact]
+    public Task Copying_a_dictionary_with_a_new_comparer_can_still_collide() => Verify("""
+        using System;
+        using System.Collections.Generic;
+        using System.Collections.Immutable;
+
+        static class C
+        {
+            static object M(IReadOnlyDictionary<string, int> d) => {|FP0015:d.ToImmutableDictionary(StringComparer.OrdinalIgnoreCase)|};
+        }
+        """);
+}

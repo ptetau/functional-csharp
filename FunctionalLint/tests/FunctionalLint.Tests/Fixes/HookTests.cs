@@ -1,3 +1,5 @@
+using System.Threading.Tasks;
+using System.Diagnostics;
 using System.IO;
 using FunctionalLint.Heal;
 using Xunit;
@@ -41,5 +43,34 @@ public class HookTests
         {
             Directory.Delete(root, recursive: true);
         }
+    }
+}
+
+public class HookExitTests
+{
+    [Fact]
+    public async Task Warnings_elsewhere_dont_fail_an_edit_but_problems_in_the_edited_file_do()
+    {
+        // FP0003 lowered to a warning while migrating, as the README suggests.
+        var references = await Lint.References.ResolveAsync(Microsoft.CodeAnalysis.LanguageNames.CSharp, default);
+        var id = Microsoft.CodeAnalysis.ProjectId.CreateNewId();
+        var clean = Microsoft.CodeAnalysis.DocumentId.CreateNewId(id);
+        var solution = new Microsoft.CodeAnalysis.AdhocWorkspace().CurrentSolution
+            .AddProject(Microsoft.CodeAnalysis.ProjectInfo.Create(id, Microsoft.CodeAnalysis.VersionStamp.Default, "Core", "Core",
+                Microsoft.CodeAnalysis.LanguageNames.CSharp,
+                compilationOptions: new Microsoft.CodeAnalysis.CSharp.CSharpCompilationOptions(Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary),
+                parseOptions: new Microsoft.CodeAnalysis.CSharp.CSharpParseOptions(Lint.CSharp15), metadataReferences: references))
+            .AddDocument(clean, "Clean.cs", Microsoft.CodeAnalysis.Text.SourceText.From("public sealed record Ok(int X);"), filePath: "/src/Clean.cs")
+            .AddDocument(Microsoft.CodeAnalysis.DocumentId.CreateNewId(id), "Old.cs",
+                Microsoft.CodeAnalysis.Text.SourceText.From("public record Old { public int Y { get; set; } }"), filePath: "/src/Old.cs")
+            .AddAnalyzerConfigDocument(Microsoft.CodeAnalysis.DocumentId.CreateNewId(id), ".editorconfig",
+                Microsoft.CodeAnalysis.Text.SourceText.From("root = true\n[*.cs]\ndotnet_diagnostic.FP0003.severity = warning\n"), filePath: "/src/.editorconfig");
+
+        var editingClean = await Checker.CheckAsync(solution, [id], "/src/Clean.cs", "/src", Stopwatch.StartNew());
+        Assert.Equal(0, editingClean.Code);
+
+        var editingOld = await Checker.CheckAsync(solution, [id], "/src/Old.cs", "/src", Stopwatch.StartNew());
+        Assert.Equal(1, editingOld.Code);
+        Assert.Contains("warning FP0003", editingOld.Report);
     }
 }

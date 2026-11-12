@@ -112,3 +112,17 @@ public class FP0012_YourOwnTypes
         }
         """);
 }
+
+public class FP0012_LibraryStructsWithSideEffects
+{
+    [Fact]
+    public Task Readonly_structs_from_libraries_can_have_side_effects() => Verify("""
+        static class C
+        {
+            static void M(System.Threading.CancellationToken token)
+            {
+                token.Register(() => { });
+            }
+        }
+        """);
+}

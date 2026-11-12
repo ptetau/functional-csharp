@@ -92,3 +92,26 @@ public class FP0013_ExhaustiveSwitches
         }
         """);
 }
+
+public class FP0013_NullableAndPatternCatchAlls
+{
+    [Fact]
+    public Task Nullable_inputs_and_property_pattern_catch_alls_are_flagged() => Verify("""
+        public enum Colour { Red, Green }
+        public closed record Shape;
+        public sealed record Dot : Shape;
+        public sealed record Ring : Shape;
+
+        public static class Use
+        {
+            public static int A(Colour? c) => c switch { Colour.Red => 1, null => 0, {|FP0013:_|} => 2 };
+            public static int B(Colour c) => c switch { Colour.Red => 1, {|FP0013:{ }|} => 2 };
+            public static int C(Shape? s) => s switch { Dot => 1, {|FP0013:not null|} => 2, null => 0 };
+            public static int D(Colour? c)
+            {
+                {|FP0013:switch|} (c) { case Colour.Red: return 1; default: return 0; }
+            }
+            public static int E(Colour? c) => c switch { Colour.Red => 1, Colour.Green => 2, null => 0 };
+        }
+        """);
+}

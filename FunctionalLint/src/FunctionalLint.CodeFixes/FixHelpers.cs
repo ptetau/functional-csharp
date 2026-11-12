@@ -19,8 +19,10 @@ internal static class FixHelpers
         return (root, root.FindToken(span.Start));
     }
 
+    // No formatter annotation on the whole node: that would reformat lines the fix didn't touch (hand-aligned
+    // columns, spacing). The fixes keep each token's trivia, so the result reads as the author wrote it.
     public static Document Replace(Document document, SyntaxNode root, SyntaxNode oldNode, SyntaxNode newNode) =>
-        document.WithSyntaxRoot(root.ReplaceNode(oldNode, newNode.WithAdditionalAnnotations(Formatter.Annotation)));
+        document.WithSyntaxRoot(root.ReplaceNode(oldNode, newNode));
 
     // Adds a modifier after access/static/new modifiers, keeping the declaration's leading trivia in place.
     public static SyntaxTokenList AddModifier(SyntaxTokenList modifiers, SyntaxKind kind)

@@ -36,12 +36,32 @@ public readonly struct ValueMap<TKey, TValue> : IReadOnlyCollection<KeyValuePair
     public ValueMap<TKey, TValue> SetItem(TKey key, TValue value) => new(Items.SetItem(key, value));
     public ValueMap<TKey, TValue> Remove(TKey key) => new(Items.Remove(key));
 
-    public bool Equals(ValueMap<TKey, TValue> other) =>
-        Count == other.Count
-        && Items.All(pair => other.Items.TryGetValue(pair.Key, out var value) && EqualityComparer<TValue>.Default.Equals(pair.Value, value));
+    /// <summary>
+    /// Same keys and values, compared with the maps' own comparers. Maps with different comparers are never equal:
+    /// otherwise a case-insensitive map could equal a case-sensitive one in one direction but not the other.
+    /// </summary>
+    public bool Equals(ValueMap<TKey, TValue> other)
+    {
+        var (mine, theirs) = (Items, other.Items);
+        return SameComparer(mine.KeyComparer, theirs.KeyComparer)
+            && SameComparer(mine.ValueComparer, theirs.ValueComparer)
+            && mine.Count == theirs.Count
+            && mine.All(pair => theirs.TryGetValue(pair.Key, out var value) && mine.ValueComparer.Equals(pair.Value, value));
+    }
     public override bool Equals(object? obj) => obj is ValueMap<TKey, TValue> other && Equals(other);
-    // Order-independent, so two maps built in different orders hash the same.
-    public override int GetHashCode() => Items.Aggregate(Count, (hash, pair) => hash ^ HashCode.Combine(pair.Key, pair.Value));
+
+    // The default comparer and StringComparer.Ordinal behave the same for strings, so they count as the same.
+    private static bool SameComparer<T>(IEqualityComparer<T> a, IEqualityComparer<T> b) => a.Equals(b) || IsDefault(a) && IsDefault(b);
+
+    private static bool IsDefault<T>(IEqualityComparer<T> comparer) =>
+        ReferenceEquals(comparer, EqualityComparer<T>.Default) || (typeof(T) == typeof(string) && ReferenceEquals(comparer, StringComparer.Ordinal));
+    // Order-independent, and hashed with the same comparers Equals uses, so equal maps always hash the same.
+    public override int GetHashCode()
+    {
+        var items = Items;
+        return items.Aggregate(items.Count, (hash, pair) =>
+            hash ^ HashCode.Combine(items.KeyComparer.GetHashCode(pair.Key), pair.Value is null ? 0 : items.ValueComparer.GetHashCode(pair.Value)));
+    }
     public static bool operator ==(ValueMap<TKey, TValue> left, ValueMap<TKey, TValue> right) => left.Equals(right);
     public static bool operator !=(ValueMap<TKey, TValue> left, ValueMap<TKey, TValue> right) => !left.Equals(right);
 

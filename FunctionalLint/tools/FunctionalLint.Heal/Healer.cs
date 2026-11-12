@@ -157,10 +157,21 @@ public static class Healer
     private static string Key(Diagnostic d) =>
         $"{d.Location.SourceTree?.FilePath}|{d.GetMessage()}|{d.Location.SourceTree?.GetText().ToString(d.Location.SourceSpan)}";
 
+    // Compiler errors in the project and in every project that depends on it: turning `set` into `init` compiles
+    // in the project itself but breaks a host project that sets the property.
     private static async Task<int> CompilerErrorsAsync(Project project, CancellationToken ct)
     {
-        var compilation = await project.GetCompilationAsync(ct);
-        return compilation?.GetDiagnostics(ct).Count(d => d.Severity == DiagnosticSeverity.Error) ?? 0;
+        var solution = project.Solution;
+        var affected = solution.GetProjectDependencyGraph()
+            .GetProjectsThatTransitivelyDependOnThisProject(project.Id)
+            .Prepend(project.Id);
+        var total = 0;
+        foreach (var id in affected)
+        {
+            var compilation = await solution.GetProject(id)!.GetCompilationAsync(ct);
+            total += compilation?.GetDiagnostics(ct).Count(d => d.Severity == DiagnosticSeverity.Error) ?? 0;
+        }
+        return total;
     }
 
     private static async Task<Project?> FixOneAsync(Project project, CodeFixProvider fixer, Diagnostic diagnostic, CancellationToken ct)
@@ -174,9 +185,10 @@ public static class Healer
         return operations.OfType<ApplyChangesOperation>().FirstOrDefault()?.ChangedSolution.GetProject(project.Id);
     }
 
-    private static async Task<Project?> FixAllAsync(Project project, CodeFixProvider fixer, string id, CancellationToken ct)
+    private static async Task<Project?> FixAllAsync(
+        Project project, CodeFixProvider fixer, string id, CancellationToken ct, ImmutableArray<Diagnostic>? known = null)
     {
-        var diagnostics = (await DiagnoseAsync(project, ct)).Where(d => d.Id == id && d.Location.IsInSource).ToImmutableArray();
+        var diagnostics = (known ?? await DiagnoseAsync(project, ct)).Where(d => d.Id == id && d.Location.IsInSource).ToImmutableArray();
         if (diagnostics.IsEmpty) return null;
 
         // Find one diagnostic the fixer offers an action for; fix-all then applies that action everywhere.
@@ -200,17 +212,55 @@ public static class Healer
         return null;
     }
 
-    /// <summary>True if one of the fixes would change the code for this diagnostic.</summary>
-    public static async Task<bool> IsFixableAsync(Project project, Diagnostic diagnostic, CancellationToken ct = default)
+    /// <summary>
+    /// The diagnostics heal would really fix: a fix is offered for them, and fixing their whole rule at once adds no
+    /// compiler error (here or in projects that depend on this one). That's one fix-all and one compile per rule
+    /// present, not a compile per diagnostic, so it's cheap enough for every --check and hook run. It's conservative:
+    /// if a rule's fix-all would break the build, none of its diagnostics are marked, even though heal may still
+    /// fix some of them one at a time.
+    /// </summary>
+    /// <remarks>
+    /// When a rule's fix-all would break the build, the diagnostics in <paramref name="focus"/> (the file just edited)
+    /// are tried one at a time, at most ten, so one bad case doesn't hide the fixable ones an agent is looking at.
+    /// </remarks>
+    public static async Task<HashSet<Diagnostic>> FixableAsync(
+        Project project, ImmutableArray<Diagnostic> diagnostics, string? focus = null, CancellationToken ct = default)
+    {
+        var fixable = new HashSet<Diagnostic>();
+        int? baseline = null;
+        foreach (var fixer in Fixers)
+            foreach (var id in fixer.FixableDiagnosticIds)
+            {
+                var ofRule = diagnostics.Where(d => d.Id == id && d.Location.IsInSource).ToImmutableArray();
+                var offered = new List<Diagnostic>();
+                foreach (var diagnostic in ofRule)
+                    if (await OffersFixAsync(project, fixer, diagnostic, ct)) offered.Add(diagnostic);
+                if (offered.Count == 0) continue;
+
+                if (await FixAllAsync(project, fixer, id, ct, ofRule) is not { } fixedProject) continue;
+                baseline ??= await CompilerErrorsAsync(project, ct);
+                if (await CompilerErrorsAsync(fixedProject, ct) <= baseline)
+                {
+                    fixable.UnionWith(offered);
+                    continue;
+                }
+
+                foreach (var diagnostic in offered.Where(d => focus is not null && d.Location.SourceTree?.FilePath == focus).Take(10))
+                    if (await FixOneAsync(project, fixer, diagnostic, ct) is { } one && await CompilerErrorsAsync(one, ct) <= baseline)
+                        fixable.Add(diagnostic);
+            }
+        return fixable;
+    }
+
+    public static async Task<bool> IsFixableAsync(Project project, Diagnostic diagnostic, CancellationToken ct = default) =>
+        (await FixableAsync(project, [diagnostic], diagnostic.Location.SourceTree?.FilePath, ct)).Count > 0;
+
+    private static async Task<bool> OffersFixAsync(Project project, CodeFixProvider fixer, Diagnostic diagnostic, CancellationToken ct)
     {
         if (project.GetDocument(diagnostic.Location.SourceTree) is not { } document) return false;
-        foreach (var fixer in Fixers.Where(f => f.FixableDiagnosticIds.Contains(diagnostic.Id)))
-        {
-            var offered = false;
-            await fixer.RegisterCodeFixesAsync(new CodeFixContext(document, diagnostic, (_, _) => offered = true, ct));
-            if (offered) return true;
-        }
-        return false;
+        var offered = false;
+        await fixer.RegisterCodeFixesAsync(new CodeFixContext(document, diagnostic, (_, _) => offered = true, ct));
+        return offered;
     }
 
     private static int Count(ImmutableArray<Diagnostic> diagnostics, string id) => diagnostics.Count(d => d.Id == id);

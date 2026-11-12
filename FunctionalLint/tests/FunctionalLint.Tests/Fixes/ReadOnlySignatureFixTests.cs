@@ -29,13 +29,68 @@ public class ReadOnlySignatureFixTests
         public static class C
         {
             public static int Count(IReadOnlyList<int> xs) => xs.Count;
-            public static Task<IReadOnlyDictionary<string, int>> Load() => null!;
+            public static Task<Dictionary<string, int>> {|FP0008:Load|}() => null!;
             public static readonly IReadOnlyCollection<int> Shared = null!;
             public static IReadOnlySet<int> Ids => null!;
-            public static int Keys(System.Collections.Generic.IReadOnlyDictionary<string, IReadOnlyList<int>> map) => map.Count;
+            public static int Keys(System.Collections.Generic.IReadOnlyDictionary<string, List<int>> {|FP0008:map|}) => map.Count;
         }
 
         public record R(IReadOnlyList<int> {|FP0014:Items|});
+        """);
+
+    // Task<T> and IReadOnlyDictionary's value are invariant: swapping inside them would stop a
+    // Dictionary<string, List<int>> converting, so only covariant positions (IReadOnlyList<out T>) are swapped.
+    [Fact]
+    public Task Inner_types_are_only_swapped_where_the_result_still_converts() => VerifyFix<ReadOnlySignatureFix>("""
+        using System.Collections.Generic;
+
+        public static class C
+        {
+            public static IReadOnlyList<IList<int>> {|FP0008:Rows|}() => [];
+        }
+        """, """
+        using System.Collections.Generic;
+
+        public static class C
+        {
+            public static IReadOnlyList<IReadOnlyList<int>> Rows() => [];
+        }
+        """);
+
+    [Fact]
+    public Task Tuple_elements_are_invariant_so_they_are_left_alone() => VerifyFix<ReadOnlySignatureFix>("""
+        using System.Collections.Generic;
+
+        public static class C
+        {
+            public static int Count(IEnumerable<(string Name, List<int> Xs)> {|FP0008:xs|}) => 0;
+        }
+        """, """
+        using System.Collections.Generic;
+
+        public static class C
+        {
+            public static int Count(IEnumerable<(string Name, List<int> Xs)> {|FP0008:xs|}) => 0;
+        }
+        """);
+
+    [Fact]
+    public Task An_async_methods_result_can_be_swapped() => VerifyFix<ReadOnlySignatureFix>("""
+        using System.Collections.Generic;
+        using System.Threading.Tasks;
+
+        public static class C
+        {
+            public static async Task<List<int>> {|FP0008:Load|}() { await Task.Yield(); return {|FP0005:[1]|}; }
+        }
+        """, """
+        using System.Collections.Generic;
+        using System.Threading.Tasks;
+
+        public static class C
+        {
+            public static async Task<IReadOnlyList<int>> Load() { await Task.Yield(); return [1]; }
+        }
         """);
 
     [Fact]
@@ -82,7 +137,7 @@ public class ReadOnlyLocalFixTests
             static int M()
             {
                 IReadOnlyList<int> a = [1, 2];
-                IReadOnlyDictionary<string, IReadOnlyList<int>> b = null!;
+                {|FP0005:IReadOnlyDictionary<string, IList<int>>|} b = null!;
                 var c = {|FP0005:new List<int>()|};
                 return a.Count + b.Count + c.Count;
             }

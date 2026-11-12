@@ -159,6 +159,7 @@ Orders.cs(20,9): error FP0001: 'foreach' loops are not allowed. Use LINQ, Aggreg
 - `heal.sh <project or solution> --check` reports without changing anything, and marks each problem it could fix `[auto-fixable]`.
 - Exit codes: 0 clean, 1 problems left, 2 couldn't run. So it works as a pre-commit hook or an agent's "am I done?" check.
 - Given a solution, it only touches projects that import `FunctionalCore.props` (or the package).
+- Given a project, it also loads the nearest solution that lists it, so it can see the projects that depend on it. A fix that would break one of them (say, a setter a host project uses) is left for you, and isn't marked `[auto-fixable]`. Without such a solution, the report says dependents weren't checked.
 
 Auto-fixes only make changes that keep the code's meaning. Where that isn't possible (loops, mutation, throws, side effects) the message says what to write instead. If a fix makes other code stop compiling, that code was mutating something it shouldn't, and the compiler now points at it.
 
@@ -170,7 +171,7 @@ Two pieces help a coding agent work in the functional subset.
 
 **Tell it the rules up front.** Copy [`agents/AGENTS.md`](agents/AGENTS.md) into your repository's `AGENTS.md` or `CLAUDE.md`. It's a one-screen summary of how to write functional core code and what to do when the lint complains.
 
-**Check every edit.** [`agents/claude-code-hook.sh`](agents/claude-code-hook.sh) is a Claude Code hook. After Claude edits a `.cs` file in a functional core project, it checks that project and hands any problems straight back to Claude. Problems in the edited file come first, with `[auto-fixable]` marks. Files in other projects are ignored. Add it to `.claude/settings.json`:
+**Check every edit.** [`agents/claude-code-hook.sh`](agents/claude-code-hook.sh) is a Claude Code hook. After Claude edits a `.cs` file in a functional core project, it checks that project and hands any problems straight back to Claude. Problems in the edited file come first, with `[auto-fixable]` marks. Files in other projects are ignored. The hook fails an edit (exit 2) for any problem in the edited file, or an error elsewhere in the project. Warnings elsewhere, such as a rule lowered to `warning` while migrating, are listed but don't fail the edit. Add it to `.claude/settings.json`:
 
 ```json
 {
@@ -190,6 +191,8 @@ Two pieces help a coding agent work in the functional subset.
 **Speed.** The first check loads the project, which takes about 4 seconds. It also starts a check server in the background, which keeps the project loaded and re-reads only the files that changed. After that a check takes about half a second. Adding or removing a file, or changing a project file, makes the server reload that project (about 2 seconds). The server stops after 30 idle minutes, or when FunctionalLint is rebuilt.
 
 - `heal.sh --serve` starts the server yourself; `heal.sh <project> --check` uses it whenever it's running.
+- It also reloads when an `.editorconfig`, `.globalconfig` or `Directory.Build.*` file changes, and stops cleanly on SIGTERM.
+- Its socket is in a folder only you can open (`$XDG_RUNTIME_DIR/functionallint` or `~/.cache/functionallint`).
 - `FUNCTIONALLINT_NO_SERVER=1` turns it off (for example on CI).
 - The first run of all also builds the heal tool, which takes longer.
 
