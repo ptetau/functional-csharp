@@ -14,7 +14,9 @@ namespace FunctionalLint.CodeFixes;
 /// <summary>
 /// FP0004: a class with only static members becomes a static class. Any other class becomes a record,
 /// as long as that keeps its meaning. Classes with a primary constructor are left alone, because a
-/// record would turn the constructor's parameters into public properties.
+/// record would turn the constructor's parameters into public properties. So are classes whose instances
+/// code in the solution may compare or hash (see <see cref="EqualityUses"/>): a record compares by value,
+/// so two equal objects that were different would become the same.
 /// </summary>
 [ExportCodeFixProvider(LanguageNames.CSharp, Name = nameof(ClassFix)), Shared]
 public sealed class ClassFix : CodeFixProvider
@@ -45,7 +47,8 @@ public sealed class ClassFix : CodeFixProvider
                 _ => Task.FromResult(FixHelpers.Replace(document, root, declaration, ToStatic(declaration))),
                 equivalenceKey: "FP0004"), diagnostic);
         }
-        else if (CanBeRecord(type, declaration))
+        else if (CanBeRecord(type, declaration)
+                 && !await EqualityUses.ComparedAsync(document.Project.Solution, type, context.CancellationToken).ConfigureAwait(false))
         {
             context.RegisterCodeFix(CodeAction.Create(
                 $"Convert '{type.Name}' to a record",

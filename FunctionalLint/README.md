@@ -8,7 +8,7 @@ A Roslyn analyzer that keeps a C# project functional. It reports errors at build
 |--------|---------|-----------------|----------|
 | [FP0001](docs/rules/FP0001.md) | `for`, `foreach`, `while`, `do`, `goto`, `.ForEach(...)` | LINQ, `Aggregate`, recursion | |
 | [FP0002](docs/rules/FP0002.md) | Reassigning variables, `+=`, `++`, setting fields, array writes, event `+=`, `out`/`ref` to existing variables, `Array.Fill`, `CopyTo` into an existing array and friends | New values, `with` expressions | |
-| [FP0003](docs/rules/FP0003.md) | Non-readonly fields, `set` accessors, non-readonly record structs | `readonly`, `init`, `readonly record struct` | Yes |
+| [FP0003](docs/rules/FP0003.md) | Non-readonly fields, `set` accessors, non-readonly record structs | `readonly`, `init`, `readonly record struct` | When safe |
 | [FP0004](docs/rules/FP0004.md) | Plain classes | Records for data, static classes for functions | When safe |
 | [FP0005](docs/rules/FP0005.md) | Creating `List<T>`, `Dictionary<,>`, `StringBuilder`, builders, streams and other mutable collections, including `ToList()`; locals typed `IList<T>` etc. | `System.Collections.Immutable` types | Locals |
 | [FP0006](docs/rules/FP0006.md) | Calling legacy code directly | Call it through an `[ImperativeAdapter]` | |
@@ -195,7 +195,7 @@ Orders.cs(20,9): error FP0001: 'foreach' loops are not allowed. Use LINQ, Aggreg
 - Given a solution, it only touches projects that import `FunctionalCore.props` (or the package).
 - Given a project, it also loads the nearest solution that lists it, so it can see the projects that depend on it. A fix that would break one of them (say, a setter a host project uses) is left for you, and isn't marked `[auto-fixable]`. Without such a solution, the report says dependents weren't checked.
 
-Auto-fixes only make changes that keep the code's meaning. Where that isn't possible (loops, mutation, throws, side effects) the message says what to write instead. If a fix makes other code stop compiling, that code was mutating something it shouldn't, and the compiler now points at it.
+Auto-fixes only make changes that keep the code's meaning. Where that isn't possible (loops, mutation, throws, side effects) the message says what to write instead. A fix is also skipped where it would change meaning in that one place: a class whose instances are compared anywhere in the solution doesn't become a record (records compare by value), and a field of a mutable struct type doesn't become `readonly` (calls on it would run on a copy). Those are left for you and aren't marked `[auto-fixable]`. If a fix makes other code stop compiling, that code was mutating something it shouldn't, and the compiler now points at it.
 
 To fix things one at a time in the IDE, use the light bulb on the error.
 

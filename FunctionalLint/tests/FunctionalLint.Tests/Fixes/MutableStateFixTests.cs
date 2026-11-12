@@ -82,4 +82,68 @@ public class MutableStateFixSafetyTests
             public double {|FP0003:R|};
         }
         """);
+
+    // `readonly` on a mutable struct makes every call run on a copy: MoveNext() would never move.
+    [Fact]
+    public Task Fields_of_mutable_struct_types_are_left_alone()
+    {
+        const string source = """
+            using System.Collections.Immutable;
+
+            public struct Counter { public int {|FP0003:N|}; public void Bump() => {|FP0002:N++|}; }
+
+            public sealed record Walker
+            {
+                private ImmutableArray<int>.Enumerator {|FP0003:_items|} = ImmutableArray.Create(1, 2).GetEnumerator();
+                private Counter {|FP0003:_counter|} = new();
+                private (Counter, int) {|FP0003:_pair|} = default;
+                private Counter? {|FP0003:_maybe|} = null;
+                public bool Next() => _items.MoveNext();
+            }
+
+            public sealed record Box<T>
+            {
+                private T {|FP0003:_value|} = default!;
+                public T Value => _value;
+            }
+            """;
+        return Lint.VerifyFix<MutableStateFix>(source, source);
+    }
+
+    [Fact]
+    public Task Fields_of_types_that_copy_safely_become_readonly() => Lint.VerifyFix<MutableStateFix>("""
+        using System;
+        using System.Collections.Immutable;
+
+        public enum Mode { On, Off }
+        public struct Point { public readonly int X; public Point(int x) { X = x; } }
+
+        public sealed record Holder<TRef> where TRef : class
+        {
+            private static ImmutableArray<int> {|FP0003:_a|} = ImmutableArray<int>.Empty;
+            private DateTime {|FP0003:_b|} = default;
+            private Mode {|FP0003:_c|} = Mode.On;
+            private int? {|FP0003:_d|} = null;
+            private (int, string) {|FP0003:_e|} = (1, "");
+            private Point {|FP0003:_f|} = new(1);
+            private TRef? {|FP0003:_g|} = null;
+        }
+        """, """
+        using System;
+        using System.Collections.Immutable;
+
+        public enum Mode { On, Off }
+        public struct Point { public readonly int X; public Point(int x) { X = x; } }
+
+        public sealed record Holder<TRef> where TRef : class
+        {
+            private static readonly ImmutableArray<int> _a = ImmutableArray<int>.Empty;
+            private readonly DateTime _b = default;
+            private readonly Mode _c = Mode.On;
+            private readonly int? _d = null;
+            private readonly (int, string) _e = (1, "");
+            private readonly Point _f = new(1);
+            private readonly TRef? _g = null;
+        }
+        """);
 }

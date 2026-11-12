@@ -218,4 +218,44 @@ public class HealerTests
 
         Assert.Equal(new[] { ("FP0005", true), ("FP0005", false) }, fixable);
     }
+
+    [Fact]
+    public async Task Leaves_fixes_that_would_change_meaning_and_does_not_mark_them()
+    {
+        // Host compares Tags, so making Tag a record would change Host's Distinct(). The enumerator is a mutable
+        // struct: readonly would make MoveNext() run on a copy.
+        var references = await Lint.References.ResolveAsync(LanguageNames.CSharp, default);
+        var core = ProjectId.CreateNewId();
+        var host = ProjectId.CreateNewId();
+        var coreDoc = DocumentId.CreateNewId(core);
+        ProjectInfo Project(ProjectId id, string name) => ProjectInfo.Create(id, VersionStamp.Default, name, name,
+            LanguageNames.CSharp, compilationOptions: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary),
+            parseOptions: new CSharpParseOptions(Lint.CSharp15), metadataReferences: references);
+        var source = """
+            public class Tag { public string Name { get; init; } = ""; }
+            public sealed record Walker
+            {
+                private System.Collections.Immutable.ImmutableArray<int>.Enumerator _items = default;
+                public bool Next() => _items.MoveNext();
+            }
+            """;
+
+        var solution = new AdhocWorkspace().CurrentSolution
+            .AddProject(Project(core, "Core"))
+            .AddDocument(coreDoc, "Tag.cs", SourceText.From(source), filePath: "/core/Tag.cs")
+            .AddProject(Project(host, "Host"))
+            .AddProjectReference(host, new ProjectReference(core))
+            .AddDocument(DocumentId.CreateNewId(host), "Use.cs",
+                SourceText.From("using System.Linq; public static class Use { public static int M(Tag[] tags) => tags.Distinct().Count(); }"),
+                filePath: "/host/Use.cs");
+
+        var result = await Healer.HealAsync(solution.GetProject(core)!);
+
+        Assert.Equal(source, await Text(result, coreDoc));
+        Assert.Empty(result.Fixed);
+        var remaining = (await Healer.DiagnoseAsync(solution.GetProject(core)!)).Where(d => d.Id is "FP0003" or "FP0004").ToList();
+        Assert.Equal(["FP0003", "FP0004"], remaining.Select(d => d.Id).Order());
+        foreach (var diagnostic in remaining)
+            Assert.False(await Healer.IsFixableAsync(solution.GetProject(core)!, diagnostic));
+    }
 }
