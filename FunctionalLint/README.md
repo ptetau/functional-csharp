@@ -187,7 +187,11 @@ Two pieces help a coding agent work in the functional subset.
 }
 ```
 
-The hook takes about 4 seconds on a small project, almost all of it loading the project. The analyzer itself takes about 0.3 s on a 200 KB file. The first run builds the checker, which takes longer.
+**Speed.** The first check loads the project, which takes about 4 seconds. It also starts a check server in the background, which keeps the project loaded and re-reads only the files that changed. After that a check takes about half a second. Adding or removing a file, or changing a project file, makes the server reload that project (about 2 seconds). The server stops after 30 idle minutes, or when FunctionalLint is rebuilt.
+
+- `heal.sh --serve` starts the server yourself; `heal.sh <project> --check` uses it whenever it's running.
+- `FUNCTIONALLINT_NO_SERVER=1` turns it off (for example on CI).
+- The first run of all also builds the heal tool, which takes longer.
 
 Other agents can use the same check: `dotnet FunctionalLint/tools/FunctionalLint.Heal/bin/Release/net11.0/FunctionalLint.Heal.dll --hook` reads `{"tool_input": {"file_path": "..."}}` on stdin and exits 2 with the problems on stderr.
 

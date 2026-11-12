@@ -1,17 +1,21 @@
 using System.Diagnostics;
 using FunctionalLint.Heal;
-using Microsoft.CodeAnalysis;
-using Microsoft.CodeAnalysis.MSBuild;
 
 // Usage:
 //   heal <project.csproj | solution.sln(x)>          fix what can be fixed, report the rest
 //   heal <project.csproj | solution.sln(x)> --check  report only; change nothing
 //   heal --hook                                       agent hook: read the edited file from stdin JSON,
 //                                                     check its project, report problems on stderr
+//   heal --serve                                      keep projects loaded so checks take well under a second
 // Exit codes: 0 clean, 1 problems remain, 2 couldn't run. In --hook mode problems exit 2,
 // which is how Claude Code hooks hand stderr back to the agent.
+//
+// --check and --hook ask a running check server first, and fall back to checking here. --hook also starts the
+// server in the background for next time. FUNCTIONALLINT_NO_SERVER=1 turns the server off.
 
-const string DocsHint = "Each message says what to write instead. Rule docs with examples: FunctionalLint/docs/rules/<ID>.md";
+var cwd = Environment.CurrentDirectory;
+
+if (args.Contains("--serve")) return await Server.RunAsync();
 
 if (args.Contains("--hook"))
 {
@@ -19,8 +23,8 @@ if (args.Contains("--hook"))
     if (edited is null || !edited.EndsWith(".cs", StringComparison.OrdinalIgnoreCase)) return 0;
     if (Hook.ProjectFor(edited) is not { } owner) return 0;
 
-    var (code, report) = await Run(owner, checkOnly: true, focus: Path.GetFullPath(edited));
-    if (code == 0 || code == 3) return 0;   // clean, or not a functional project
+    var (code, report) = await CheckAsync(owner, Path.GetFullPath(edited), startServer: true);
+    if (code is 0 or 3) return 0;   // clean, or not a functional project
     Console.Error.Write(report);
     return 2;
 }
@@ -28,133 +32,42 @@ if (args.Contains("--hook"))
 var path = args.FirstOrDefault(a => !a.StartsWith("--"));
 if (path is null || !File.Exists(path))
 {
-    Console.Error.WriteLine("usage: heal <project.csproj | solution.sln> [--check]   or   heal --hook");
+    Console.Error.WriteLine("usage: heal <project.csproj | solution.sln> [--check]   or   heal --hook   or   heal --serve");
     return 2;
 }
 
-var (exit, output) = await Run(path, args.Contains("--check"), focus: null);
+var (exit, output) = args.Contains("--check")
+    ? await CheckAsync(path, focus: null, startServer: false)
+    : await HealAsync(path);
 Console.Write(output);
 return exit == 3 ? 2 : exit;
 
-// 0 clean, 1 problems, 2 failed, 3 no project references FunctionalLint.
-static async Task<(int Code, string Report)> Run(string path, bool checkOnly, string? focus)
+async Task<(int Code, string Report)> CheckAsync(string target, string? focus, bool startServer)
 {
-    var clock = Stopwatch.StartNew();
-    var report = new StringWriter();
+    // Solutions are checked here: the server keeps single projects, which is what hooks ask for.
+    if (!target.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
+        return await CheckHereAsync(target, focus);
 
-    using var workspace = MSBuildWorkspace.Create();
-    workspace.RegisterWorkspaceFailedHandler(e =>
-    {
-        if (e.Diagnostic.Kind == WorkspaceDiagnosticKind.Failure) Console.Error.WriteLine($"warning: {e.Diagnostic.Message}");
-    });
+    if (await Server.TryAskAsync(new Server.Request(target, focus, cwd), TimeSpan.FromSeconds(60)) is { } answer)
+        return (answer.Code, answer.Report);
 
-    var full = Path.GetFullPath(path);
-    var projects = Path.GetExtension(full) is ".sln" or ".slnx"
-        ? (await workspace.OpenSolutionAsync(full)).Projects.ToList()
-        : [await workspace.OpenProjectAsync(full)];
-
-    // Only heal projects that opted in by referencing the analyzer (through FunctionalCore.props or the package).
-    // Host, test and adapter projects are left alone, as they are at build time.
-    var functional = projects
-        .Where(p => p.AnalyzerReferences.Any(r => (r.FullPath ?? r.Display).Contains("FunctionalLint", StringComparison.OrdinalIgnoreCase)))
-        .ToList();
-    if (functional.Count == 0)
-    {
-        report.WriteLine($"No project in {path} references FunctionalLint. Import FunctionalCore.props first.");
-        return (3, report.ToString());
-    }
-
-    // Only edited document text is written back. Healing also changes the language version it parses with
-    // (see Healer.UseNewestLanguage), and that must never reach the project.
-    var solution = workspace.CurrentSolution;
-    var fixedTotals = new SortedDictionary<string, int>();
-    var remaining = new List<(Diagnostic Diagnostic, bool Fixable)>();
-    var notFixed = new List<string>();
-
-    foreach (var id in functional.Select(p => p.Id))
-    {
-        var project = Healer.UseNewestLanguage(solution.GetProject(id)!);
-        if (checkOnly)
-        {
-            var found = await Healer.DiagnoseAsync(project);
-            foreach (var d in found.Where(d => d.Severity == DiagnosticSeverity.Error || Healer.IsOurs(d)))
-                remaining.Add((d, await Healer.IsFixableAsync(project, d)));
-            continue;
-        }
-
-        var result = await Healer.HealAsync(project);
-        foreach (var changed in result.Solution.GetChanges(project.Solution).GetProjectChanges().SelectMany(c => c.GetChangedDocuments()))
-            solution = solution.WithDocumentText(changed, await result.Solution.GetDocument(changed)!.GetTextAsync());
-        if (result.NotFixedBecause is { } why) notFixed.Add($"{project.Name}: not fixed, {why}");
-        foreach (var (rule, n) in result.Fixed) fixedTotals[rule] = fixedTotals.GetValueOrDefault(rule) + n;
-        remaining.AddRange(result.Remaining.Select(d => (d, false)));
-    }
-
-    if (!checkOnly && !workspace.TryApplyChanges(solution))
-    {
-        report.WriteLine("Couldn't write the fixes to disk.");
-        return (2, report.ToString());
-    }
-
-    if (!checkOnly)
-    {
-        report.WriteLine("== Auto-fixed");
-        notFixed.ForEach(line => report.WriteLine("  " + line));
-        if (fixedTotals.Count == 0 && notFixed.Count == 0) report.WriteLine("  nothing");
-        foreach (var (rule, n) in fixedTotals)
-            report.WriteLine($"  {rule} x{n}. Next time: {Healer.Habits.GetValueOrDefault(rule, "")}");
-        report.WriteLine();
-    }
-
-    // The edited file's problems first (hook mode), then everything else in file order.
-    var ordered = remaining
-        .OrderBy(r => r.Diagnostic.Location.SourceTree?.FilePath == focus ? 0 : 1)
-        .ThenBy(r => r.Diagnostic.Location.SourceTree?.FilePath, StringComparer.Ordinal)
-        .ThenBy(r => r.Diagnostic.Location.SourceSpan.Start)
-        .Select(r => (Line: Format(r.Diagnostic) + (r.Fixable ? " [auto-fixable]" : ""), r.Fixable,
-                      InFocus: r.Diagnostic.Location.SourceTree?.FilePath == focus, IsOurs: Healer.IsOurs(r.Diagnostic)))
-        .DistinctBy(r => r.Line)
-        .ToList();
-
-    if (ordered.Count == 0)
-    {
-        report.WriteLine($"== Clean. ({clock.Elapsed.TotalSeconds:0.0}s)");
-        return (0, report.ToString());
-    }
-
-    var fixable = ordered.Count(r => r.Fixable);
-    if (focus is not null)
-    {
-        // An agent wants the file it just touched; cap the rest so the message stays readable.
-        var here = ordered.Where(r => r.InFocus).ToList();
-        var elsewhere = ordered.Where(r => !r.InFocus).ToList();
-        report.WriteLine($"FunctionalLint: {here.Count} problem(s) in {Path.GetFileName(focus)}, {elsewhere.Count} elsewhere in the project.");
-        here.ForEach(r => report.WriteLine(r.Line));
-        elsewhere.Take(10).ToList().ForEach(r => report.WriteLine(r.Line));
-        if (elsewhere.Count > 10) report.WriteLine($"... and {elsewhere.Count - 10} more.");
-        if (fixable > 0) report.WriteLine($"{fixable} marked [auto-fixable]: run FunctionalLint/heal.sh <project> to fix them, then fix the rest by hand.");
-        if (ordered.Any(r => r.IsOurs)) report.WriteLine(DocsHint);
-        return (1, report.ToString());
-    }
-
-    report.WriteLine(checkOnly
-        ? $"== {ordered.Count} problem(s), {fixable} auto-fixable with heal.sh ({clock.Elapsed.TotalSeconds:0.0}s)"
-        : $"== Remaining: {ordered.Count} to fix by hand ({clock.Elapsed.TotalSeconds:0.0}s)");
-    ordered.ForEach(r => report.WriteLine(r.Line));
-    if (ordered.Any(r => r.IsOurs))
-    {
-        report.WriteLine();
-        report.WriteLine(DocsHint);
-    }
-    return (1, report.ToString());
+    var result = await CheckHereAsync(target, focus);
+    if (startServer) Server.StartInBackground();
+    return result;
 }
 
-static string Format(Diagnostic d)
+async Task<(int Code, string Report)> CheckHereAsync(string target, string? focus)
 {
-    var span = d.Location.GetLineSpan();
-    // Relative to where you ran it when that's shorter and clearer; absolute otherwise.
-    var relative = span.Path is { Length: > 0 } p ? Path.GetRelativePath(Environment.CurrentDirectory, p) : "";
-    var file = relative.StartsWith("..", StringComparison.Ordinal) ? span.Path : relative;
-    var severity = d.Severity == DiagnosticSeverity.Error ? "error" : "warning";
-    return $"{file}({span.StartLinePosition.Line + 1},{span.StartLinePosition.Character + 1}): {severity} {d.Id}: {d.GetMessage()}";
+    var clock = Stopwatch.StartNew();
+    var loaded = await Checker.LoadAsync(target);
+    using (loaded.Workspace)
+        return await Checker.CheckAsync(loaded.Workspace.CurrentSolution, loaded.Functional, focus, cwd, clock);
+}
+
+async Task<(int Code, string Report)> HealAsync(string target)
+{
+    var clock = Stopwatch.StartNew();
+    var loaded = await Checker.LoadAsync(target);
+    using (loaded.Workspace)
+        return await Checker.HealAsync(loaded, cwd, clock);
 }

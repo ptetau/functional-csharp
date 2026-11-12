@@ -4,6 +4,7 @@
 #   ./FunctionalLint/heal.sh path/to/Core.csproj           # fix, then report
 #   ./FunctionalLint/heal.sh path/to/App.slnx --check      # report only, change nothing
 #   ./FunctionalLint/heal.sh --hook < hook-input.json      # agent hook (see agents/claude-code-hook.sh)
+#   ./FunctionalLint/heal.sh --serve                       # keep projects loaded: checks drop from ~4 s to ~0.5 s
 #
 # Exit code 0 means clean, 1 means problems remain (listed at the end), 2 means it couldn't run.
 # The work is done by tools/FunctionalLint.Heal, which loads the project once and fixes everything in memory.

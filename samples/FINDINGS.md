@@ -7,7 +7,7 @@ Each app has its own detailed log (`<App>/FINDINGS.md`). This file merges them, 
 ## Status after round two
 
 Every finding below was acted on. The four apps were then updated to the stricter rules by a second round of agents,
-which found seven more problems (all fixed) and left six open items. Details are at the end.
+which found seven more problems and six open items. All of them are fixed; details are at the end.
 
 | Finding | Status |
 |---|---|
@@ -28,7 +28,7 @@ which found seven more problems (all fixed) and left six open items. Details are
 | 5.1–5.3 Library gaps | **Done.** `Validation<TError, T>`, `Option.Bind`/LINQ/`IfSome`/`All`, `Result.MapError`/`Switch`/`ToValidation`, `ToValueList`. |
 | 5.4 `Option` allocates | **Documented**: use `T?` in hot paths. |
 | 6.1–6.7 Noise and wording | **Done.** |
-| 7.1 Loop speed | **Partly.** heal.sh runs the built tool (about 5 s per check, from 6–8 s). A long-running check server would get it under a second. |
+| 7.1 Loop speed | **Done.** heal.sh runs the built tool, and a check server answers warm checks in about 0.5 s (from 6–8 s). |
 
 ## The short version
 
@@ -132,14 +132,13 @@ Real bugs the new rules found: a CharacterReviews page that crashed when a chara
 | R6 | LINQ over `ValueList` boxed it: 92 MB per ray-tracer render instead of 2 MB. | Allocation-free instance `Aggregate`/`Any`/`All`/`Select`/`Where`. |
 | R7 | Missing: `ValueList.Slice` (list patterns), `Validation.MapErrors`/`ToOption`, `Result.ToValidation`, `Option.All`. | Added. |
 
-### Still open
+### Open items, now resolved
 
-| # | Finding | Thoughts |
+| # | Finding | Resolution |
 |---|---|---|
-| O1 | FP0015 doesn't see guards: `d.ContainsKey(k) ? d : d.Add(k, v)` is flagged. | `SetItem` is the better form anyway; the message suggests it. |
-| O2 | FP0014 applies to private fold accumulators whose equality is never used. | AGENTS.md now says to use a tuple for fold state. |
-| O3 | Three-way outcomes (found / invalid / not found) mean writing a closed record by hand; CharacterReviews still nests `Result<Validation<...>>`. | Fine as a closed record; a generator could help. |
-| O4 | `Validation.Combine` over 3+ inputs nests tuples; no `Result.FirstOk`. | Small library additions. |
-| O5 | `First` over an infinite `Range` is flagged though it can't throw. | The rule can't know; rewriting with `FirstOrDefault` is clearer anyway. |
-| O6 | heal still takes about 5 s per check. | A check server (load the project once, re-check on each edit) would get it under a second. |
-
+| O1 | FP0015 didn't see guards: `d.ContainsKey(k) ? d : d.Add(k, v)` was flagged. | FP0015 recognises `ContainsKey` guards in `?:`, `if`, `&&` and `||`, for indexers and `Add`. |
+| O2 | FP0014 applied to private fold accumulators whose equality is never used. | Private nested records are exempt; AGENTS.md says to use a tuple for fold state. |
+| O3 | Three-way outcomes meant nesting `Result<Validation<...>>`, and CharacterReviews looked a title up twice. | CharacterReviews returns a closed `Change<TParent, T>` (Added, Invalid with the parent, NotFound) and switches over it. |
+| O4 | `Validation.Combine` stopped at 4 inputs; no `Result.FirstOk`. | `Combine` takes up to 6; `Result.FirstOk`, `OrElse` and `Combine` added. |
+| O5 | `First` over an unbounded `Range` was flagged. | Searches over `Sequences.From(n)` (new) or `Enumerable.Range(n, int.MaxValue)` aren't reported. |
+| O6 | A check took about 5 s. | A check server keeps projects loaded: about 0.5 s per check after the first, 2 s after adding a file. The hook starts it; `heal.sh --serve` starts it by hand. |
