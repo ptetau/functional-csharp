@@ -204,7 +204,7 @@ public static class Server
             if (!loaded.TryGetValue(project, out var entry) || NeedsReload(entry))
             {
                 entry?.Loaded.Workspace.Dispose();
-                entry = new Entry(await Checker.LoadAsync(project));
+                entry = new Entry(await Checker.LoadWithDependentsAsync(project));
                 Remember(entry);
                 loaded[project] = entry;
             }
@@ -238,6 +238,7 @@ public static class Server
         var candidates = solution.Projects
             .SelectMany(p => p.AnalyzerConfigDocuments.Select(d => d.FilePath).OfType<string>()
                 .Concat(p.FilePath is { } projectFile ? MsBuildInputs(projectFile) : []))
+            .Concat(solution.FilePath is { } solutionFile ? [solutionFile] : [])
             .Distinct(StringComparer.Ordinal)
             .Order(StringComparer.Ordinal);
         return string.Join("\n", candidates.Select(f => File.Exists(f) ? $"{f}|{File.GetLastWriteTimeUtc(f).Ticks}" : $"{f}|-"));
@@ -256,23 +257,31 @@ public static class Server
         return nearby.Concat(generated).Concat(imports);
     }
 
-    private static readonly System.Text.RegularExpressions.Regex ImportPattern =
-        new("<Import\\s+Project\\s*=\\s*\"([^\"]+)\"", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-
-    // Files imported with <Import Project="..."/>, followed recursively. Paths using properties other than
-    // $(MSBuildThisFileDirectory) and $(MSBuildProjectDirectory) can't be resolved without MSBuild and are skipped.
+    // Files imported with <Import Project="..."/>, in any attribute order or quote style, followed recursively.
+    // Paths using properties other than $(MSBuildThisFileDirectory) and $(MSBuildProjectDirectory) can't be
+    // resolved without MSBuild and are skipped; Sdk="..." imports come from the SDK, which doesn't change under us.
     private static IEnumerable<string> Imports(string file, string projectFolder, HashSet<string> seen)
     {
         if (!seen.Add(file) || !File.Exists(file)) return [];
         var folder = Path.GetDirectoryName(file)!;
-        var direct = ImportPattern.Matches(File.ReadAllText(file))
-            .Select(m => m.Groups[1].Value
-                .Replace("$(MSBuildThisFileDirectory)", folder + Path.DirectorySeparatorChar)
-                .Replace("$(MSBuildProjectDirectory)", projectFolder)
-                .Replace('\\', Path.DirectorySeparatorChar))
-            .Where(path => !path.Contains("$("))
-            .Select(path => Path.GetFullPath(path, folder))
-            .ToList();
+        List<string> direct;
+        try
+        {
+            direct = System.Xml.Linq.XDocument.Load(file).Descendants()
+                .Where(e => e.Name.LocalName == "Import")
+                .Select(e => e.Attribute("Project")?.Value).OfType<string>()
+                .Select(path => path
+                    .Replace("$(MSBuildThisFileDirectory)", folder + Path.DirectorySeparatorChar)
+                    .Replace("$(MSBuildProjectDirectory)", projectFolder)
+                    .Replace('\\', Path.DirectorySeparatorChar))
+                .Where(path => !path.Contains("$("))
+                .Select(path => Path.GetFullPath(path, folder))
+                .ToList();
+        }
+        catch (Exception e) when (e is System.Xml.XmlException or IOException or UnauthorizedAccessException)
+        {
+            return [];
+        }
         return direct.Concat(direct.SelectMany(path => Imports(path, projectFolder, seen)));
     }
 

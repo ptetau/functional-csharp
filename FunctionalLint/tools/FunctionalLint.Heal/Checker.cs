@@ -14,42 +14,68 @@ public static class Checker
     public sealed record Loaded(MSBuildWorkspace Workspace, IReadOnlyList<ProjectId> Functional, string? Note = null);
 
     /// <summary>
-    /// For fixing one project: load the nearest solution above it that lists it, so the projects that depend on it
-    /// are loaded too and heal can see if a fix would break them. Only the requested project is fixed.
+    /// Loads a project together with the projects that depend on it: the nearest solution above it that lists it.
+    /// Fixes are then checked against the dependents too (turning `set` into `init` compiles in a project but breaks
+    /// a host that sets the property). Only the requested project is checked or fixed. Without such a solution, the
+    /// project is loaded alone and the result carries a note saying dependents weren't checked.
     /// </summary>
-    public static async Task<Loaded> LoadForFixingAsync(string path)
+    public static async Task<Loaded> LoadWithDependentsAsync(string path)
     {
         var full = Path.GetFullPath(path);
         if (!full.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase)) return await LoadAsync(full);
 
-        if (SolutionListing(full) is not { } solution)
+        const string unchecked_ = "so projects that depend on it weren't checked. Heal the solution instead to be sure a fix doesn't break them.";
+        if (SolutionListing(full) is { } solution)
         {
-            var alone = await LoadAsync(full);
-            return alone with
-            {
-                Note = $"No solution file above {Path.GetFileName(full)} lists it, so projects that depend on it weren't checked. " +
-                       "Heal the solution instead to be sure a fix doesn't break them.",
-            };
+            var loaded = await LoadAsync(solution);
+            var only = loaded.Functional
+                .Where(id => loaded.Workspace.CurrentSolution.GetProject(id)?.FilePath is { } file && SamePath(file, full))
+                .ToList();
+            if (only.Count > 0) return loaded with { Functional = only };
+            loaded.Workspace.Dispose();
         }
 
-        var loaded = await LoadAsync(solution);
-        var only = loaded.Functional
-            .Where(id => string.Equals(loaded.Workspace.CurrentSolution.GetProject(id)?.FilePath, full, StringComparison.Ordinal))
-            .ToList();
-        return loaded with { Functional = only };
+        var alone = await LoadAsync(full);
+        return alone with { Note = $"No solution file above {Path.GetFileName(full)} lists it, {unchecked_}" };
     }
 
-    // The nearest .sln or .slnx at or above the project's folder that mentions the project's file name.
+    // File systems on Windows and macOS ignore case by default; Linux's don't.
+    private static readonly StringComparison PathComparison =
+        OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+
+    private static bool SamePath(string a, string b) => string.Equals(Path.GetFullPath(a), Path.GetFullPath(b), PathComparison);
+
+    // The nearest .sln or .slnx at or above the project's folder that lists this exact project.
     private static string? SolutionListing(string project)
     {
-        var name = Path.GetFileName(project);
         for (var dir = new DirectoryInfo(Path.GetDirectoryName(project)!); dir is not null; dir = dir.Parent)
         {
             var match = dir.EnumerateFiles("*.sln").Concat(dir.EnumerateFiles("*.slnx"))
-                .FirstOrDefault(f => File.ReadAllText(f.FullName).Contains(name, StringComparison.OrdinalIgnoreCase));
+                .FirstOrDefault(f => ProjectsIn(f.FullName).Any(listed => SamePath(listed, project)));
             if (match is not null) return match.FullName;
         }
         return null;
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex SlnProjectLine =
+        new("^Project\\(\"[^\"]*\"\\)\\s*=\\s*\"[^\"]*\",\\s*\"([^\"]+)\"", System.Text.RegularExpressions.RegexOptions.Multiline);
+
+    // The full paths of the projects a solution lists.
+    private static IEnumerable<string> ProjectsIn(string solution)
+    {
+        var folder = Path.GetDirectoryName(solution)!;
+        try
+        {
+            var relative = solution.EndsWith(".slnx", StringComparison.OrdinalIgnoreCase)
+                ? System.Xml.Linq.XDocument.Load(solution).Descendants()
+                    .Where(e => e.Name.LocalName == "Project").Select(e => e.Attribute("Path")?.Value).OfType<string>()
+                : SlnProjectLine.Matches(File.ReadAllText(solution)).Select(m => m.Groups[1].Value);
+            return relative.Select(r => Path.GetFullPath(r.Replace('\\', Path.DirectorySeparatorChar), folder)).ToList();
+        }
+        catch (Exception e) when (e is IOException or System.Xml.XmlException or UnauthorizedAccessException)
+        {
+            return [];
+        }
     }
 
     /// <summary>The projects in <paramref name="path"/> that reference FunctionalLint. Host, test and adapter projects are left alone, as at build time.</summary>
@@ -85,7 +111,7 @@ public static class Checker
             var project = Healer.UseNewestLanguage(solution.GetProject(id)!);
             var found = (await Healer.DiagnoseAsync(project))
                 .Where(d => d.Severity == DiagnosticSeverity.Error || Healer.IsOurs(d)).ToImmutableArray();
-            var fixable = await Healer.FixableAsync(project, found);
+            var fixable = await Healer.FixableAsync(project, found, focus);
             remaining.AddRange(found.Select(d => (d, fixable.Contains(d))));
         }
         return Report(remaining, checkOnly: true, focus, cwd, clock, prefix: "");

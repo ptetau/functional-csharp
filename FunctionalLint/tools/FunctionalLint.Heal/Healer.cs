@@ -219,7 +219,12 @@ public static class Healer
     /// if a rule's fix-all would break the build, none of its diagnostics are marked, even though heal may still
     /// fix some of them one at a time.
     /// </summary>
-    public static async Task<HashSet<Diagnostic>> FixableAsync(Project project, ImmutableArray<Diagnostic> diagnostics, CancellationToken ct = default)
+    /// <remarks>
+    /// When a rule's fix-all would break the build, the diagnostics in <paramref name="focus"/> (the file just edited)
+    /// are tried one at a time, at most ten, so one bad case doesn't hide the fixable ones an agent is looking at.
+    /// </remarks>
+    public static async Task<HashSet<Diagnostic>> FixableAsync(
+        Project project, ImmutableArray<Diagnostic> diagnostics, string? focus = null, CancellationToken ct = default)
     {
         var fixable = new HashSet<Diagnostic>();
         int? baseline = null;
@@ -234,13 +239,21 @@ public static class Healer
 
                 if (await FixAllAsync(project, fixer, id, ct, ofRule) is not { } fixedProject) continue;
                 baseline ??= await CompilerErrorsAsync(project, ct);
-                if (await CompilerErrorsAsync(fixedProject, ct) <= baseline) fixable.UnionWith(offered);
+                if (await CompilerErrorsAsync(fixedProject, ct) <= baseline)
+                {
+                    fixable.UnionWith(offered);
+                    continue;
+                }
+
+                foreach (var diagnostic in offered.Where(d => focus is not null && d.Location.SourceTree?.FilePath == focus).Take(10))
+                    if (await FixOneAsync(project, fixer, diagnostic, ct) is { } one && await CompilerErrorsAsync(one, ct) <= baseline)
+                        fixable.Add(diagnostic);
             }
         return fixable;
     }
 
     public static async Task<bool> IsFixableAsync(Project project, Diagnostic diagnostic, CancellationToken ct = default) =>
-        (await FixableAsync(project, [diagnostic], ct)).Count > 0;
+        (await FixableAsync(project, [diagnostic], diagnostic.Location.SourceTree?.FilePath, ct)).Count > 0;
 
     private static async Task<bool> OffersFixAsync(Project project, CodeFixProvider fixer, Diagnostic diagnostic, CancellationToken ct)
     {

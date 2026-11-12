@@ -159,6 +159,7 @@ Orders.cs(20,9): error FP0001: 'foreach' loops are not allowed. Use LINQ, Aggreg
 - `heal.sh <project or solution> --check` reports without changing anything, and marks each problem it could fix `[auto-fixable]`.
 - Exit codes: 0 clean, 1 problems left, 2 couldn't run. So it works as a pre-commit hook or an agent's "am I done?" check.
 - Given a solution, it only touches projects that import `FunctionalCore.props` (or the package).
+- Given a project, it also loads the nearest solution that lists it, so it can see the projects that depend on it. A fix that would break one of them (say, a setter a host project uses) is left for you, and isn't marked `[auto-fixable]`. Without such a solution, the report says dependents weren't checked.
 
 Auto-fixes only make changes that keep the code's meaning. Where that isn't possible (loops, mutation, throws, side effects) the message says what to write instead. If a fix makes other code stop compiling, that code was mutating something it shouldn't, and the compiler now points at it.
 

@@ -61,7 +61,7 @@ async Task<(int Code, string Report)> CheckAsync(string target, string? focus, b
 async Task<(int Code, string Report)> CheckHereAsync(string target, string? focus)
 {
     var clock = Stopwatch.StartNew();
-    var loaded = await Checker.LoadAsync(target);
+    var loaded = await Checker.LoadWithDependentsAsync(target);
     using (loaded.Workspace)
         return await Checker.CheckAsync(loaded.Workspace.CurrentSolution, loaded.Functional, focus, cwd, clock);
 }
@@ -69,7 +69,7 @@ async Task<(int Code, string Report)> CheckHereAsync(string target, string? focu
 async Task<(int Code, string Report)> HealAsync(string target)
 {
     var clock = Stopwatch.StartNew();
-    var loaded = await Checker.LoadForFixingAsync(target);
+    var loaded = await Checker.LoadWithDependentsAsync(target);
     using (loaded.Workspace)
         return await Checker.HealAsync(loaded, cwd, clock);
 }

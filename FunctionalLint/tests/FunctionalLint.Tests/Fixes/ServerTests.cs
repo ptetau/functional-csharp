@@ -135,12 +135,51 @@ public class ServerTests
                 """);
             Run("dotnet", $"restore \"{Path.Combine(folder, "App.slnx")}\" -nodeReuse:false --disable-build-servers -v q");
 
-            var loaded = await Checker.LoadForFixingAsync(Path.Combine(folder, "Core", "Core.csproj"));
+            var loaded = await Checker.LoadWithDependentsAsync(Path.Combine(folder, "Core", "Core.csproj"));
             using (loaded.Workspace)
             {
+                // --check agrees with heal: the setter isn't offered as auto-fixable, because heal will refuse it.
+                var (_, check) = await Checker.CheckAsync(loaded.Workspace.CurrentSolution, loaded.Functional, null, folder, Stopwatch.StartNew());
+                Assert.Contains("FP0003", check);
+                Assert.DoesNotContain("[auto-fixable]", check);
+
                 var (_, report) = await Checker.HealAsync(loaded, folder, Stopwatch.StartNew());
                 Assert.Contains("set;", File.ReadAllText(settings));
                 Assert.Contains("FP0003", report);
+            }
+        }
+        finally
+        {
+            Directory.Delete(folder, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task A_solution_that_only_mentions_a_similar_name_is_skipped()
+    {
+        // App.slnx lists App/MyCore.csproj, whose name contains "Core.csproj". Heal must still find and fix Core.
+        var folder = Directory.CreateTempSubdirectory("heal-decoy").FullName;
+        try
+        {
+            var props = Path.Combine(Repo.Root, "build", "FunctionalCore.props");
+            Directory.CreateDirectory(Path.Combine(folder, "Core"));
+            File.WriteAllText(Path.Combine(folder, "Core", "Core.csproj"), $"""
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup><TargetFramework>net11.0</TargetFramework></PropertyGroup>
+                  <Import Project="{props}" />
+                </Project>
+                """);
+            var settings = Path.Combine(folder, "Core", "Settings.cs");
+            File.WriteAllText(settings, "namespace Core;\npublic sealed record Settings { public int Retries { get; set; } }\n");
+            File.WriteAllText(Path.Combine(folder, "App.slnx"), """<Solution><Project Path="App/MyCore.csproj" /></Solution>""");
+            Run("dotnet", $"restore \"{Path.Combine(folder, "Core", "Core.csproj")}\" -nodeReuse:false --disable-build-servers -v q");
+
+            var loaded = await Checker.LoadWithDependentsAsync(Path.Combine(folder, "Core", "Core.csproj"));
+            using (loaded.Workspace)
+            {
+                Assert.Contains("weren't checked", loaded.Note);
+                await Checker.HealAsync(loaded, folder, Stopwatch.StartNew());
+                Assert.Contains("init;", File.ReadAllText(settings));
             }
         }
         finally
