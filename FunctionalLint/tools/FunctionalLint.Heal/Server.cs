@@ -230,16 +230,50 @@ public static class Server
             .Where(f => !Path.GetRelativePath(folder, f).Split(Path.DirectorySeparatorChar).Any(part => part is "bin" or "obj"))
             .ToHashSet(StringComparer.Ordinal);
 
-    // Every config file that can affect the analysis, whether or not it exists yet, with its timestamp.
+    // Every config file that can affect the analysis, whether or not it exists yet, with its timestamp: analyzer
+    // config, the .editorconfig/.globalconfig/Directory.Build.* files above each project, every .props/.targets
+    // those and the project import (FunctionalCore.props sets NoWarn and WarningsAsErrors), and NuGet's imports.
     private static string ConfigSignature(Solution solution)
     {
         var candidates = solution.Projects
             .SelectMany(p => p.AnalyzerConfigDocuments.Select(d => d.FilePath).OfType<string>()
-                .Concat(p.FilePath is { } projectFile ? Ancestors(Path.GetDirectoryName(projectFile)!).SelectMany(dir =>
-                    ConfigFileNames.Select(name => Path.Combine(dir, name))) : []))
+                .Concat(p.FilePath is { } projectFile ? MsBuildInputs(projectFile) : []))
             .Distinct(StringComparer.Ordinal)
             .Order(StringComparer.Ordinal);
         return string.Join("\n", candidates.Select(f => File.Exists(f) ? $"{f}|{File.GetLastWriteTimeUtc(f).Ticks}" : $"{f}|-"));
+    }
+
+    private static IEnumerable<string> MsBuildInputs(string projectFile)
+    {
+        var folder = Path.GetDirectoryName(projectFile)!;
+        var nearby = Ancestors(folder).SelectMany(dir => ConfigFileNames.Select(name => Path.Combine(dir, name))).ToList();
+        var obj = Path.Combine(folder, "obj");
+        var generated = Directory.Exists(obj)
+            ? Directory.EnumerateFiles(obj, "*.g.props").Concat(Directory.EnumerateFiles(obj, "*.g.targets"))
+            : [];
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var imports = nearby.Prepend(projectFile).Where(File.Exists).SelectMany(f => Imports(f, folder, seen)).ToList();
+        return nearby.Concat(generated).Concat(imports);
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex ImportPattern =
+        new("<Import\\s+Project\\s*=\\s*\"([^\"]+)\"", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+    // Files imported with <Import Project="..."/>, followed recursively. Paths using properties other than
+    // $(MSBuildThisFileDirectory) and $(MSBuildProjectDirectory) can't be resolved without MSBuild and are skipped.
+    private static IEnumerable<string> Imports(string file, string projectFolder, HashSet<string> seen)
+    {
+        if (!seen.Add(file) || !File.Exists(file)) return [];
+        var folder = Path.GetDirectoryName(file)!;
+        var direct = ImportPattern.Matches(File.ReadAllText(file))
+            .Select(m => m.Groups[1].Value
+                .Replace("$(MSBuildThisFileDirectory)", folder + Path.DirectorySeparatorChar)
+                .Replace("$(MSBuildProjectDirectory)", projectFolder)
+                .Replace('\\', Path.DirectorySeparatorChar))
+            .Where(path => !path.Contains("$("))
+            .Select(path => Path.GetFullPath(path, folder))
+            .ToList();
+        return direct.Concat(direct.SelectMany(path => Imports(path, projectFolder, seen)));
     }
 
     private static IEnumerable<string> Ancestors(string folder)

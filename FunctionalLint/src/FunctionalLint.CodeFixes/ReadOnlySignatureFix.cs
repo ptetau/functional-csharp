@@ -92,17 +92,44 @@ public sealed class ReadOnlySignatureFix : CodeFixProvider
             : replacement;
     }
 
+    // Walks up from a mutable type to the declared type. Only steps that keep a conversion valid are allowed:
+    // a type argument whose parameter is covariant (`out T`), a qualified name, a nullable or array type. Anything
+    // else (a tuple element, an invariant type argument) would stop the old type converting to the new one.
     private static bool OnlyInCovariantPositions(SemanticModel model, SyntaxNode name, SyntaxNode outermost)
     {
-        for (var node = name; node != outermost && node.Parent is not null; node = node.Parent)
+        var node = name;
+        while (node != outermost)
         {
-            if (node.Parent is not TypeArgumentListSyntax arguments || arguments.Parent is not GenericNameSyntax generic) continue;
-            if (model.GetSymbolInfo(generic).Symbol is not INamedTypeSymbol type) return false;
-            var index = arguments.Arguments.IndexOf((TypeSyntax)node);
-            if (index < 0 || type.OriginalDefinition.TypeParameters[index].Variance != VarianceKind.Out) return false;
+            switch (node.Parent)
+            {
+                case QualifiedNameSyntax or AliasQualifiedNameSyntax or NullableTypeSyntax or ArrayTypeSyntax:
+                    node = node.Parent;
+                    continue;
+                case TypeArgumentListSyntax { Parent: GenericNameSyntax generic } arguments:
+                    if (model.GetSymbolInfo(generic).Symbol is not INamedTypeSymbol type) return false;
+                    var index = arguments.Arguments.IndexOf((TypeSyntax)node);
+                    if (index < 0) return false;
+                    if (type.OriginalDefinition.TypeParameters[index].Variance != VarianceKind.Out
+                        && !IsAsyncResult(generic, type, outermost)) return false;
+                    node = generic;   // step over the argument list to the generic type that holds it
+                    continue;
+                default:
+                    return false;
+            }
         }
         return true;
     }
+
+    // `async Task<List<int>> F()`: the body returns the list itself, so `Task<IReadOnlyList<int>>` still compiles.
+    private static bool IsAsyncResult(GenericNameSyntax generic, INamedTypeSymbol type, SyntaxNode outermost) =>
+        generic == outermost
+        && type.OriginalDefinition.ToDisplayString() is "System.Threading.Tasks.Task<TResult>" or "System.Threading.Tasks.ValueTask<TResult>"
+        && outermost.Parent switch
+        {
+            MethodDeclarationSyntax m => m.ReturnType == outermost && m.Modifiers.Any(SyntaxKind.AsyncKeyword),
+            LocalFunctionStatementSyntax l => l.ReturnType == outermost && l.Modifiers.Any(SyntaxKind.AsyncKeyword),
+            _ => false,
+        };
 
     // `IReadOnlyList<int> xs = new();` can't compile: there's no interface to construct. Leave those to a person.
     private static bool HasTargetTypedNew(SyntaxNode? declaration) => declaration switch

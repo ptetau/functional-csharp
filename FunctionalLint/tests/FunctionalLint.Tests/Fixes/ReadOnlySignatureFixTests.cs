@@ -58,6 +58,42 @@ public class ReadOnlySignatureFixTests
         """);
 
     [Fact]
+    public Task Tuple_elements_are_invariant_so_they_are_left_alone() => VerifyFix<ReadOnlySignatureFix>("""
+        using System.Collections.Generic;
+
+        public static class C
+        {
+            public static int Count(IEnumerable<(string Name, List<int> Xs)> {|FP0008:xs|}) => 0;
+        }
+        """, """
+        using System.Collections.Generic;
+
+        public static class C
+        {
+            public static int Count(IEnumerable<(string Name, List<int> Xs)> {|FP0008:xs|}) => 0;
+        }
+        """);
+
+    [Fact]
+    public Task An_async_methods_result_can_be_swapped() => VerifyFix<ReadOnlySignatureFix>("""
+        using System.Collections.Generic;
+        using System.Threading.Tasks;
+
+        public static class C
+        {
+            public static async Task<List<int>> {|FP0008:Load|}() { await Task.Yield(); return {|FP0005:[1]|}; }
+        }
+        """, """
+        using System.Collections.Generic;
+        using System.Threading.Tasks;
+
+        public static class C
+        {
+            public static async Task<IReadOnlyList<int>> Load() { await Task.Yield(); return [1]; }
+        }
+        """);
+
+    [Fact]
     public Task Types_without_a_read_only_interface_are_left_alone() => VerifyFix<ReadOnlySignatureFix>("""
         using System.Collections.Generic;
 

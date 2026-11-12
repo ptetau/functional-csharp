@@ -26,8 +26,10 @@ public class ServerTests
                 <Project Sdk="Microsoft.NET.Sdk">
                   <PropertyGroup><TargetFramework>net11.0</TargetFramework></PropertyGroup>
                   <Import Project="{props}" />
+                  <Import Project="shared.props" />
                 </Project>
                 """);
+            File.WriteAllText(Path.Combine(folder, "shared.props"), "<Project />");
             var file = Path.Combine(folder, "Order.cs");
             File.WriteAllText(file, "namespace Core;\npublic sealed record Order(int Id);\n");
             // No MSBuild node reuse: a reused node would outlive the restore and keep this test's process tree busy.
@@ -62,6 +64,13 @@ public class ServerTests
             File.WriteAllText(Path.Combine(folder, ".editorconfig"), "root = true\n[*.cs]\ndotnet_diagnostic.FP0003.severity = none\n");
             var configured = await AskAsync(request);
             Assert.DoesNotContain("FP0003", configured.Report);
+
+            // ...including imported .props files: turning FP0015 off there clears it.
+            Assert.Contains("FP0015", (await AskAsync(request with { Focus = added })).Report);
+            File.WriteAllText(Path.Combine(folder, "shared.props"),
+                "<Project><PropertyGroup><NoWarn>$(NoWarn);FP0015</NoWarn></PropertyGroup></Project>");
+            var imported = await AskAsync(request with { Focus = added });
+            Assert.DoesNotContain("FP0015", imported.Report);
         }
         finally
         {
@@ -90,5 +99,53 @@ public class ServerTests
         using var process = Process.Start(start)!;
         Assert.True(process.WaitForExit(TimeSpan.FromMinutes(3)), $"{program} {arguments} didn't finish.");
         Assert.Equal(0, process.ExitCode);
+    }
+
+    [Fact]
+    public async Task Healing_one_project_checks_the_projects_that_depend_on_it()
+    {
+        // Core's setter would become init, which compiles in Core but breaks Host. Heal is given only Core.csproj,
+        // so it has to find the solution to see Host.
+        var folder = Directory.CreateTempSubdirectory("heal-solution").FullName;
+        try
+        {
+            var props = Path.Combine(Repo.Root, "build", "FunctionalCore.props");
+            Directory.CreateDirectory(Path.Combine(folder, "Core"));
+            Directory.CreateDirectory(Path.Combine(folder, "Host"));
+            File.WriteAllText(Path.Combine(folder, "Core", "Core.csproj"), $"""
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup><TargetFramework>net11.0</TargetFramework></PropertyGroup>
+                  <Import Project="{props}" />
+                </Project>
+                """);
+            var settings = Path.Combine(folder, "Core", "Settings.cs");
+            File.WriteAllText(settings, "namespace Core;\npublic sealed record Settings { public int Retries { get; set; } }\n");
+            File.WriteAllText(Path.Combine(folder, "Host", "Host.csproj"), """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup><TargetFramework>net11.0</TargetFramework></PropertyGroup>
+                  <ItemGroup><ProjectReference Include="../Core/Core.csproj" /></ItemGroup>
+                </Project>
+                """);
+            File.WriteAllText(Path.Combine(folder, "Host", "Use.cs"), "public static class Use { public static void M(Core.Settings s) { s.Retries = 3; } }\n");
+            File.WriteAllText(Path.Combine(folder, "App.slnx"), """
+                <Solution>
+                  <Project Path="Core/Core.csproj" />
+                  <Project Path="Host/Host.csproj" />
+                </Solution>
+                """);
+            Run("dotnet", $"restore \"{Path.Combine(folder, "App.slnx")}\" -nodeReuse:false --disable-build-servers -v q");
+
+            var loaded = await Checker.LoadForFixingAsync(Path.Combine(folder, "Core", "Core.csproj"));
+            using (loaded.Workspace)
+            {
+                var (_, report) = await Checker.HealAsync(loaded, folder, Stopwatch.StartNew());
+                Assert.Contains("set;", File.ReadAllText(settings));
+                Assert.Contains("FP0003", report);
+            }
+        }
+        finally
+        {
+            Directory.Delete(folder, recursive: true);
+        }
     }
 }

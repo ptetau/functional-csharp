@@ -92,6 +92,12 @@ public class ValueMapTests
         Assert.Equal(upper.GetHashCode(), lower.GetHashCode());
         Assert.Contains(lower, new HashSet<ValueMap<string, int>> { upper });
 
+        // The default string comparer and Ordinal behave the same, so they count as the same.
+        ValueMap<string, int> ordinal = System.Collections.Immutable.ImmutableDictionary.Create<string, int>(StringComparer.Ordinal).SetItem("a", 1);
+        ValueMap<string, int> plain = System.Collections.Immutable.ImmutableDictionary<string, int>.Empty.SetItem("a", 1);
+        Assert.Equal(plain, ordinal);
+        Assert.Equal(plain.GetHashCode(), ordinal.GetHashCode());
+
         // Different comparers: unequal both ways, so equality stays symmetric.
         ValueMap<string, int> exact = System.Collections.Immutable.ImmutableDictionary<string, int>.Empty.SetItem("a", 1);
         Assert.False(lower.Equals(exact));

@@ -43,12 +43,18 @@ public readonly struct ValueMap<TKey, TValue> : IReadOnlyCollection<KeyValuePair
     public bool Equals(ValueMap<TKey, TValue> other)
     {
         var (mine, theirs) = (Items, other.Items);
-        return mine.KeyComparer.Equals(theirs.KeyComparer)
-            && mine.ValueComparer.Equals(theirs.ValueComparer)
+        return SameComparer(mine.KeyComparer, theirs.KeyComparer)
+            && SameComparer(mine.ValueComparer, theirs.ValueComparer)
             && mine.Count == theirs.Count
             && mine.All(pair => theirs.TryGetValue(pair.Key, out var value) && mine.ValueComparer.Equals(pair.Value, value));
     }
     public override bool Equals(object? obj) => obj is ValueMap<TKey, TValue> other && Equals(other);
+
+    // The default comparer and StringComparer.Ordinal behave the same for strings, so they count as the same.
+    private static bool SameComparer<T>(IEqualityComparer<T> a, IEqualityComparer<T> b) => a.Equals(b) || IsDefault(a) && IsDefault(b);
+
+    private static bool IsDefault<T>(IEqualityComparer<T> comparer) =>
+        ReferenceEquals(comparer, EqualityComparer<T>.Default) || (typeof(T) == typeof(string) && ReferenceEquals(comparer, StringComparer.Ordinal));
     // Order-independent, and hashed with the same comparers Equals uses, so equal maps always hash the same.
     public override int GetHashCode()
     {

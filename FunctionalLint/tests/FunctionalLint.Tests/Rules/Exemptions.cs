@@ -77,6 +77,8 @@ public class AdapterFunctions
                 Log();
                 Action a = [ImperativeAdapter] () => Console.WriteLine("y");
                 a();
+                [ImperativeAdapter] static async void Fire() => await System.Threading.Tasks.Task.Yield();
+                Fire();
                 {|FP0011:Console.WriteLine("z")|};
             }
         }

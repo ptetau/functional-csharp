@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Diagnostics;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.MSBuild;
@@ -9,8 +10,47 @@ public static class Checker
 {
     private const string DocsHint = "Each message says what to write instead. Rule docs with examples: FunctionalLint/docs/rules/<ID>.md";
 
-    /// <summary>A loaded project or solution, with the projects that use FunctionalLint.</summary>
-    public sealed record Loaded(MSBuildWorkspace Workspace, IReadOnlyList<ProjectId> Functional);
+    /// <summary>A loaded project or solution, with the projects that use FunctionalLint, and anything to tell the user.</summary>
+    public sealed record Loaded(MSBuildWorkspace Workspace, IReadOnlyList<ProjectId> Functional, string? Note = null);
+
+    /// <summary>
+    /// For fixing one project: load the nearest solution above it that lists it, so the projects that depend on it
+    /// are loaded too and heal can see if a fix would break them. Only the requested project is fixed.
+    /// </summary>
+    public static async Task<Loaded> LoadForFixingAsync(string path)
+    {
+        var full = Path.GetFullPath(path);
+        if (!full.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase)) return await LoadAsync(full);
+
+        if (SolutionListing(full) is not { } solution)
+        {
+            var alone = await LoadAsync(full);
+            return alone with
+            {
+                Note = $"No solution file above {Path.GetFileName(full)} lists it, so projects that depend on it weren't checked. " +
+                       "Heal the solution instead to be sure a fix doesn't break them.",
+            };
+        }
+
+        var loaded = await LoadAsync(solution);
+        var only = loaded.Functional
+            .Where(id => string.Equals(loaded.Workspace.CurrentSolution.GetProject(id)?.FilePath, full, StringComparison.Ordinal))
+            .ToList();
+        return loaded with { Functional = only };
+    }
+
+    // The nearest .sln or .slnx at or above the project's folder that mentions the project's file name.
+    private static string? SolutionListing(string project)
+    {
+        var name = Path.GetFileName(project);
+        for (var dir = new DirectoryInfo(Path.GetDirectoryName(project)!); dir is not null; dir = dir.Parent)
+        {
+            var match = dir.EnumerateFiles("*.sln").Concat(dir.EnumerateFiles("*.slnx"))
+                .FirstOrDefault(f => File.ReadAllText(f.FullName).Contains(name, StringComparison.OrdinalIgnoreCase));
+            if (match is not null) return match.FullName;
+        }
+        return null;
+    }
 
     /// <summary>The projects in <paramref name="path"/> that reference FunctionalLint. Host, test and adapter projects are left alone, as at build time.</summary>
     public static async Task<Loaded> LoadAsync(string path)
@@ -43,9 +83,10 @@ public static class Checker
         foreach (var id in functional)
         {
             var project = Healer.UseNewestLanguage(solution.GetProject(id)!);
-            var found = await Healer.DiagnoseAsync(project);
-            foreach (var d in found.Where(d => d.Severity == DiagnosticSeverity.Error || Healer.IsOurs(d)))
-                remaining.Add((d, await Healer.IsFixableAsync(project, d)));
+            var found = (await Healer.DiagnoseAsync(project))
+                .Where(d => d.Severity == DiagnosticSeverity.Error || Healer.IsOurs(d)).ToImmutableArray();
+            var fixable = await Healer.FixableAsync(project, found);
+            remaining.AddRange(found.Select(d => (d, fixable.Contains(d))));
         }
         return Report(remaining, checkOnly: true, focus, cwd, clock, prefix: "");
     }
@@ -76,6 +117,7 @@ public static class Checker
         if (!loaded.Workspace.TryApplyChanges(solution)) return (2, "Couldn't write the fixes to disk.\n");
 
         var header = new StringWriter();
+        if (loaded.Note is { } note) header.WriteLine("note: " + note);
         header.WriteLine("== Auto-fixed");
         notFixed.ForEach(line => header.WriteLine("  " + line));
         if (fixedTotals.Count == 0 && notFixed.Count == 0) header.WriteLine("  nothing");

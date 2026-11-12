@@ -1095,7 +1095,8 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         // the enclosing method, so the symbol check above can't see the attribute.)
         private static bool InAdapterFunction(IOperation operation)
         {
-            for (var current = operation.Parent; current is not null; current = current.Parent)
+            // Start at the operation itself: a marked local function's own declaration is exempt too (FP0010).
+            for (var current = operation; current is not null; current = current.Parent)
             {
                 var function = current switch
                 {
