@@ -142,3 +142,9 @@ Real bugs the new rules found: a CharacterReviews page that crashed when a chara
 | O4 | `Validation.Combine` stopped at 4 inputs; no `Result.FirstOk`. | `Combine` takes up to 6; `Result.FirstOk`, `OrElse` and `Combine` added. |
 | O5 | `First` over an unbounded `Range` was flagged. | Searches over `Sequences.From(n)` (new) or `Enumerable.Range(n, int.MaxValue)` aren't reported. |
 | O6 | A check took about 5 s. | A check server keeps projects loaded: about 0.5 s per check after the first, 2 s after adding a file. The hook starts it; `heal.sh --serve` starts it by hand. |
+
+### Found by CI on Windows
+
+| # | Finding | Status |
+|---|---|---|
+| W1 | HighlightReel's JSON output used `\r\n` on Windows: `JsonSerializerOptions.WriteIndented` writes `Environment.NewLine` unless `NewLine` is set. FP0011 flags `Environment.NewLine` itself, but not this hidden use of it. | Fixed in the app (`NewLine = "\n"`). FP0011 now flags indented JSON options without `NewLine`, and heal adds it. |

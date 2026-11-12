@@ -126,3 +126,32 @@ public class FP0011_MoreApis
         }
         """);
 }
+
+public class FP0011_IndentedJson
+{
+    [Fact]
+    public Task Indented_json_without_a_newline_is_flagged() => Verify("""
+        using System.Text.Json;
+
+        public static class C
+        {
+            public static readonly JsonSerializerOptions A = new() { {|FP0011:WriteIndented = true|} };
+            public static readonly JsonSerializerOptions B = new(JsonSerializerDefaults.Web) { {|FP0011:WriteIndented = true|} };
+            public static readonly JsonWriterOptions D = new() { {|FP0011:Indented = true|} };
+        }
+        """);
+
+    [Fact]
+    public Task Options_that_set_a_newline_or_dont_indent_are_fine() => Verify("""
+        using System.Text.Json;
+
+        public static class C
+        {
+            public static readonly JsonSerializerOptions A = new() { WriteIndented = true, NewLine = "\n" };
+            public static readonly JsonSerializerOptions B = new() { NewLine = "\n", WriteIndented = true };
+            public static readonly JsonSerializerOptions D = new() { WriteIndented = false };
+            public static readonly JsonSerializerOptions E = new() { PropertyNameCaseInsensitive = true };
+            public static readonly JsonWriterOptions F = new() { Indented = true, NewLine = "\n" };
+        }
+        """);
+}
