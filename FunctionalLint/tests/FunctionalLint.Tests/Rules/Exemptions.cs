@@ -60,3 +60,25 @@ public class Exemptions
         }
         """);
 }
+
+public class AdapterFunctions
+{
+    [Fact]
+    public Task An_adapter_attribute_on_a_local_function_or_lambda_exempts_its_body() => Verify($$"""
+        using System;
+
+        {{AdapterAttribute}}
+
+        public static class C
+        {
+            public static void M()
+            {
+                [ImperativeAdapter] static void Log() => Console.WriteLine("x");
+                Log();
+                Action a = [ImperativeAdapter] () => Console.WriteLine("y");
+                a();
+                {|FP0011:Console.WriteLine("z")|};
+            }
+        }
+        """);
+}

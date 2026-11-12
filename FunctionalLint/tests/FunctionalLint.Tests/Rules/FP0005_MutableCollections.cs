@@ -129,3 +129,14 @@ public class FP0005_MoreMutableTypes
         }
         """);
 }
+
+public class FP0005_PriorityQueue
+{
+    [Fact]
+    public Task Priority_queues_are_mutable() => Verify("""
+        static class C
+        {
+            static object M() => {|FP0005:new System.Collections.Generic.PriorityQueue<int, int>()|};
+        }
+        """);
+}

@@ -113,3 +113,16 @@ public class FP0011_HiddenInputs
         }.Order(), findings.Where(f => f.Id == "FP0011").Select(f => f.Message).Order());
     }
 }
+
+public class FP0011_MoreApis
+{
+    [Fact]
+    public Task Time_based_guids_and_temp_files_are_side_effects() => Verify("""
+        static class C
+        {
+            static System.Guid A() => {|FP0011:System.Guid.CreateVersion7()|};
+            static string B() => {|FP0011:System.IO.Path.GetTempFileName()|};
+            static string D() => {|FP0011:System.IO.Path.GetRandomFileName()|};
+        }
+        """);
+}
