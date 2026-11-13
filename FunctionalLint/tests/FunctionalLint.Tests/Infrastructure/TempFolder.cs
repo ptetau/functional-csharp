@@ -12,6 +12,14 @@ public static class TempFolder
     /// </summary>
     public static string Create(string prefix) => RealPath(Directory.CreateTempSubdirectory(prefix).FullName);
 
+    /// <summary>Deletes a temp folder, including files marked read-only (git's objects are, on Windows).</summary>
+    public static void Delete(string folder)
+    {
+        foreach (var file in Directory.EnumerateFiles(folder, "*", SearchOption.AllDirectories))
+            File.SetAttributes(file, FileAttributes.Normal);
+        Directory.Delete(folder, recursive: true);
+    }
+
     private static string RealPath(string path)
     {
         var full = Path.GetFullPath(path);

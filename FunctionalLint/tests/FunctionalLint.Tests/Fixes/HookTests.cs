@@ -111,7 +111,7 @@ public class HookExitTests
         }
         finally
         {
-            Directory.Delete(root, recursive: true);
+            TempFolder.Delete(root);
         }
     }
 
