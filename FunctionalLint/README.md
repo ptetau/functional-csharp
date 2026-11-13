@@ -20,12 +20,13 @@ A Roslyn analyzer that keeps a C# project functional. It reports errors at build
 | [FP0012](docs/rules/FP0012.md) | Ignoring the result of `list.Add(x)`, LINQ, string, date or `Math` methods, or methods on your own records | Use the result: `var updated = list.Add(x)` | |
 | [FP0013](docs/rules/FP0013.md) | Catch-all arms (`_`, `var x`, `object`...), switch statements and switching on a cast, over enums, `closed` types and unions | A switch expression that lists every case | |
 | [FP0014](docs/rules/FP0014.md) | Collections that compare by reference (`ImmutableArray`, lists, arrays) inside records | `ValueList<T>` or another `[ValueEquality]` type | |
-| [FP0015](docs/rules/FP0015.md) | Calls that throw: `First`, `Single`, `Parse`, `dict[key]`, `ToDictionary`... | `FirstOrDefault`, list patterns, `TryParse`, `TryGetValue` | |
+| [FP0015](docs/rules/FP0015.md) | Calls that throw: `First`, `Single`, `Parse`, `dict[key]`, `ToDictionary`..., downcasts, integer division by what may be 0 | `FirstOrDefault`, list patterns, `TryParse`, `TryGetValue`; patterns instead of downcasts; check for 0 before dividing | |
 | [FP0016](docs/rules/FP0016.md) | `#pragma warning disable`, `[SuppressMessage]`, `#nullable disable`; with a policy, also lowered rules and compiler checks, nullable or analyzers off, code marked generated, a second policy file, a core that stopped loading FunctionalLint | Fix what the rule reports | |
 | [FP0017](docs/rules/FP0017.md) | With a policy: `[ImperativeAdapter]` outside the policy's adapter namespaces | Pass the value in, or move the adapter | |
 | [FP0018](docs/rules/FP0018.md) | With a policy: using a library beyond the .NET base library and the policy's list | Move that code to a shell project | |
 | [FP0019](docs/rules/FP0019.md) | Any syntax outside the subset in `Subset.cs`: `lock`, `try`, `using`, events, `unsafe`, `ref`/`out`, `async`, `checked`, `!`, `dynamic`... and anything a future C# adds | The subset's features: records, expressions, patterns, LINQ | |
 | [FP0020](docs/rules/FP0020.md) | Any part of .NET outside the subset in `ApiSubset.cs`: threads, `GC`, interop, reflection, hash codes, enumerators... | LINQ, immutable collections, strings, numbers, dates; the rest in a shell project | |
+| [FP0021](docs/rules/FP0021.md) | Showing a hash set's or dictionary's order: `string.Join(", ", set)`, `set.ToImmutableArray()`, `set.First()` | `Order()` / `OrderBy(...)` first, or a sorted collection | |
 
 Each rule's page has a before/after example. The build output links to it.
 
@@ -276,7 +277,7 @@ FunctionalLint is checked by itself. The analyzer and code fixes are gate-only c
 
 - **Mutating methods on library types.** `Array.Sort`, `Array.Fill`, `CopyTo` into an existing array and similar are caught (FP0002), but a method that changes a mutable object from a library isn't. FP0005 and FP0008 keep most mutable collections out in the first place.
 - **Mutable objects in readonly fields**, such as a `static readonly JsonSerializerOptions`. `readonly` protects only the reference.
-- **Every way to throw.** FP0015 covers the common calls; indexers on arrays and lists, overflow and casts aren't covered. Random-input tests find the rest: see [FP0015](docs/rules/FP0015.md#what-it-doesnt-cover).
+- **Every way to throw.** FP0015 covers the common calls, downcasts and division by what may be 0; indexing an array or list out of range isn't covered. Random-input tests find the rest: see [FP0015](docs/rules/FP0015.md#what-it-doesnt-cover).
 - **Mutation inside libraries you call.**
 - **Arrays in signatures.** Arrays are allowed, but writing to an element is flagged.
 

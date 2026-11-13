@@ -169,7 +169,7 @@ public sealed partial class FunctionalAnalyzer : DiagnosticAnalyzer
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics { get; } = ImmutableArray.Create(
         NoLoops, NoMutation, NoMutableState, NoObjects, NoMutableTypes, NoDirectImperative,
         NoThrow, MutableSignature, AdapterLeak, AsyncVoid, ImpureApi, IgnoredResult, ExhaustiveSwitch,
-        ReferenceEqualityInRecord, ThrowingCall, RuleSwitchedOff, AdapterPlacement, ReferenceOutsidePolicy, OutsideSubset, OutsideApiSubset);
+        ReferenceEqualityInRecord, ThrowingCall, RuleSwitchedOff, AdapterPlacement, ReferenceOutsidePolicy, OutsideSubset, OutsideApiSubset, HashOrder);
 
     // Configuration -----------------------------------------------------------
 
@@ -339,6 +339,10 @@ public sealed partial class FunctionalAnalyzer : DiagnosticAnalyzer
             start.RegisterOperationAction(GuardOp(AnalyzeRefArgument), OperationKind.Argument);
             start.RegisterOperationAction(GuardOp(AnalyzeMutatingCall), OperationKind.Invocation);
             start.RegisterOperationAction(GuardOp(AnalyzeThrowingCall), OperationKind.Invocation, OperationKind.PropertyReference);
+            start.RegisterOperationAction(GuardOp(AnalyzeThrowingCast), OperationKind.Conversion);
+            start.RegisterOperationAction(GuardOp(AnalyzeDivision), OperationKind.Binary);
+            start.RegisterOperationAction(GuardOp(AnalyzeHashOrder), OperationKind.Invocation);
+            start.RegisterOperationAction(GuardOp(AnalyzeHashOrderedSpread), OperationKind.CollectionExpression);
             var valueTypes = new Lazy<(string? List, string? Map)>(() => FindValueEqualityTypes(start.Compilation));
             start.RegisterSymbolAction(GuardSymbol(ctx => AnalyzeRecordEquality(ctx, valueTypes)), SymbolKind.NamedType);
             start.RegisterOperationAction(GuardOp(AnalyzeAssignment),
@@ -429,7 +433,7 @@ public sealed partial class FunctionalAnalyzer : DiagnosticAnalyzer
     // `xs.ForEach(x => ...)` (List, ImmutableList, Array, Parallel) is a loop written as a method call.
     private static void AnalyzeLoopCall(OperationAnalysisContext ctx)
     {
-        var op = (IInvocationOperation)ctx.Operation;
+        if (ctx.Operation is not IInvocationOperation op) return;
         if (op.TargetMethod.Name != "ForEach" || op.TargetMethod.Locations.Any(l => l.IsInSource)) return;
         if (!op.TargetMethod.Parameters.Any(p => p.Type.TypeKind == TypeKind.Delegate)) return;
 
@@ -455,7 +459,7 @@ public sealed partial class FunctionalAnalyzer : DiagnosticAnalyzer
 
     private static void AnalyzeAssignment(OperationAnalysisContext ctx)
     {
-        var op = (IAssignmentOperation)ctx.Operation;
+        if (ctx.Operation is not IAssignmentOperation op) return;
 
         // `var (a, b) = t;`, `(var a, var b) = t;` and `_ = x;` bind new names. Not mutation.
         if (IsFreshBinding(op.Target)) return;
@@ -476,14 +480,14 @@ public sealed partial class FunctionalAnalyzer : DiagnosticAnalyzer
 
     private static void AnalyzeIncrement(OperationAnalysisContext ctx)
     {
-        var op = (IIncrementOrDecrementOperation)ctx.Operation;
+        if (ctx.Operation is not IIncrementOrDecrementOperation op) return;
         if (IsInsideLoop(op)) return;
         ReportChange(ctx, op.Syntax, op.Target);
     }
 
     private static void AnalyzeEventAssignment(OperationAnalysisContext ctx)
     {
-        var op = (IEventAssignmentOperation)ctx.Operation;
+        if (ctx.Operation is not IEventAssignmentOperation op) return;
         Report(ctx, NoMutation, op.Syntax, $"'{op.EventReference.Syntax}' is changed here.", NewNameRemedy);
     }
 
@@ -491,7 +495,7 @@ public sealed partial class FunctionalAnalyzer : DiagnosticAnalyzer
     // `out var n` and `out _` bind a new name, and passing your own out parameter on is how TryX methods chain.
     private static void AnalyzeRefArgument(OperationAnalysisContext ctx)
     {
-        var op = (IArgumentOperation)ctx.Operation;
+        if (ctx.Operation is not IArgumentOperation op) return;
         if (op.Parameter is not { RefKind: RefKind.Out or RefKind.Ref } parameter) return;
         // Only a variable you can see can be overwritten. (`string.Create(culture, $"...")` passes a
         // compiler-made interpolation handler by ref: nothing of yours changes.)
@@ -520,7 +524,7 @@ public sealed partial class FunctionalAnalyzer : DiagnosticAnalyzer
 
     private static void AnalyzeMutatingCall(OperationAnalysisContext ctx)
     {
-        var method = ((IInvocationOperation)ctx.Operation).TargetMethod;
+        if (ctx.Operation is not IInvocationOperation { TargetMethod: var method }) return;
         var key = method.ContainingType.OriginalDefinition.ToDisplayString() + "." + method.Name;
         if (!MutatingApis.Contains(key) && !CopiesIntoBuffer(method)) return;
 
@@ -566,7 +570,7 @@ public sealed partial class FunctionalAnalyzer : DiagnosticAnalyzer
 
     private static void AnalyzeField(SymbolAnalysisContext ctx)
     {
-        var field = (IFieldSymbol)ctx.Symbol;
+        if (ctx.Symbol is not IFieldSymbol field) return;
         if (field.IsImplicitlyDeclared || field.IsConst || field.IsReadOnly) return;
 
         ctx.ReportDiagnostic(Diagnostic.Create(
@@ -575,7 +579,7 @@ public sealed partial class FunctionalAnalyzer : DiagnosticAnalyzer
 
     private static void AnalyzeProperty(SymbolAnalysisContext ctx)
     {
-        var property = (IPropertySymbol)ctx.Symbol;
+        if (ctx.Symbol is not IPropertySymbol property) return;
         if (property.IsImplicitlyDeclared || property.SetMethod is null || property.SetMethod.IsInitOnly) return;
 
         // `record struct P(int X)`: reported once, on the struct. Declaring it readonly fixes every property.
@@ -594,7 +598,7 @@ public sealed partial class FunctionalAnalyzer : DiagnosticAnalyzer
 
     private static void AnalyzeType(SymbolAnalysisContext ctx)
     {
-        var type = (INamedTypeSymbol)ctx.Symbol;
+        if (ctx.Symbol is not INamedTypeSymbol type) return;
         if (type.IsImplicitlyDeclared || type.Locations.Length == 0 || !type.Locations[0].IsInSource) return;
 
         // `record struct P(int X)` generates settable properties.
@@ -687,7 +691,7 @@ public sealed partial class FunctionalAnalyzer : DiagnosticAnalyzer
     // caught where they're created (above), so only the interfaces need checking here.
     private static void AnalyzeLocalType(OperationAnalysisContext ctx, IReadOnlyDictionary<ISymbol, string> banned)
     {
-        var op = (IVariableDeclarationOperation)ctx.Operation;
+        if (ctx.Operation is not IVariableDeclarationOperation op) return;
         if (op.Syntax is not VariableDeclarationSyntax { Type: { IsVar: false } typeSyntax }) return;
         if (op.Declarators.FirstOrDefault()?.Symbol.Type is not { } type) return;
 
@@ -720,7 +724,7 @@ public sealed partial class FunctionalAnalyzer : DiagnosticAnalyzer
     // `ArgumentOutOfRangeException.ThrowIfNegative`, `ObjectDisposedException.ThrowIf`...) and `ExceptionDispatchInfo.Throw`.
     private static void AnalyzeThrowHelper(OperationAnalysisContext ctx)
     {
-        var method = ((IInvocationOperation)ctx.Operation).TargetMethod;
+        if (ctx.Operation is not IInvocationOperation { TargetMethod: var method }) return;
         if (method.Locations.Any(l => l.IsInSource)) return;
 
         var throws = method.Name.StartsWith("ThrowIf", StringComparison.Ordinal) && method.IsStatic
@@ -801,7 +805,7 @@ public sealed partial class FunctionalAnalyzer : DiagnosticAnalyzer
 
     private static void AnalyzeSwitchExpression(OperationAnalysisContext ctx)
     {
-        var op = (ISwitchExpressionOperation)ctx.Operation;
+        if (ctx.Operation is not ISwitchExpressionOperation op) return;
         if (ReportWidened(ctx, op.Value)) return;
         if (op.Value.Type is not { } type || CheckedKind(type) is null) return;
 
@@ -870,7 +874,7 @@ public sealed partial class FunctionalAnalyzer : DiagnosticAnalyzer
 
     private static void AnalyzeSwitchStatement(OperationAnalysisContext ctx)
     {
-        var op = (ISwitchOperation)ctx.Operation;
+        if (ctx.Operation is not ISwitchOperation op) return;
         if (ReportWidened(ctx, op.Value)) return;
         if (op.Value.Type is not { } type || CheckedKind(type) is not { } kind) return;
 
@@ -908,7 +912,7 @@ public sealed partial class FunctionalAnalyzer : DiagnosticAnalyzer
 
     private static void AnalyzeRecordEquality(SymbolAnalysisContext ctx, Lazy<(string? List, string? Map)> valueTypes)
     {
-        var type = (INamedTypeSymbol)ctx.Symbol;
+        if (ctx.Symbol is not INamedTypeSymbol type) return;
         if (!type.IsRecord || type.IsImplicitlyDeclared) return;
 
         // A private nested record (typically a fold's running state) is only compared where you can see it.
@@ -1236,7 +1240,7 @@ public sealed partial class FunctionalAnalyzer : DiagnosticAnalyzer
 
     private static void AnalyzeIgnoredResult(OperationAnalysisContext ctx)
     {
-        var statement = (IExpressionStatementOperation)ctx.Operation;
+        if (ctx.Operation is not IExpressionStatementOperation statement) return;
         if (statement.Operation is not IInvocationOperation { TargetMethod: { ReturnsVoid: false } method } invocation) return;
         if (!ReturnsNewValue(method)) return;
 
@@ -1302,7 +1306,7 @@ public sealed partial class FunctionalAnalyzer : DiagnosticAnalyzer
 
     private static void AnalyzeIndentedWriter(OperationAnalysisContext ctx)
     {
-        var creation = (IObjectCreationOperation)ctx.Operation;
+        if (ctx.Operation is not IObjectCreationOperation creation) return;
         if (creation.Type is not INamedTypeSymbol type || creation.Initializer is null) return;
         var name = type.ToDisplayString();
         var (_, indent, newLine) = IndentedWriters.FirstOrDefault(w => w.Type == name);
@@ -1325,7 +1329,7 @@ public sealed partial class FunctionalAnalyzer : DiagnosticAnalyzer
     // `text.ReplaceLineEndings()` with no argument uses Environment.NewLine.
     private static void AnalyzeReplaceLineEndings(OperationAnalysisContext ctx)
     {
-        var call = (IInvocationOperation)ctx.Operation;
+        if (ctx.Operation is not IInvocationOperation call) return;
         if (call.TargetMethod is not { Name: "ReplaceLineEndings", Parameters.Length: 0 } method
             || method.ContainingType.SpecialType != SpecialType.System_String) return;
 
@@ -1492,7 +1496,7 @@ public sealed partial class FunctionalAnalyzer : DiagnosticAnalyzer
 
     private static void AnalyzeAdapterPlacement(SyntaxNodeAnalysisContext ctx)
     {
-        var attribute = (AttributeSyntax)ctx.Node;
+        if (ctx.Node is not AttributeSyntax attribute) return;
         if (ctx.SemanticModel.GetSymbolInfo(attribute, ctx.CancellationToken).Symbol?.ContainingType?.Name != AdapterAttributeName) return;
         if (PolicyList(ctx.Options.AnalyzerConfigOptionsProvider.GetOptions(attribute.SyntaxTree), AdapterNamespacesKey) is not { } allowed) return;
 

@@ -64,7 +64,9 @@ public readonly struct ValueMap<TKey, TValue> : IReadOnlyCollection<KeyValuePair
     public static bool operator ==(ValueMap<TKey, TValue> left, ValueMap<TKey, TValue> right) => left.Equals(right);
     public static bool operator !=(ValueMap<TKey, TValue> left, ValueMap<TKey, TValue> right) => !left.Equals(right);
 
-    public override string ToString() => "{" + string.Join(", ", Items.Select(pair => $"{pair.Key}: {pair.Value}")) + "}";
+    // Sorted, so it reads the same on every run: a dictionary's own order follows hash codes, which change.
+    public override string ToString() =>
+        "{" + string.Join(", ", Items.Select(pair => $"{pair.Key}: {pair.Value}").Order(StringComparer.Ordinal)) + "}";
 
     public IEnumerator<KeyValuePair<TKey, TValue>> GetEnumerator() => Items.GetEnumerator();
     IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();

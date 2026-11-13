@@ -106,6 +106,12 @@ public class MessageTests
             "'#pragma warning disable CS0168' turns checks off. Remove it and fix the code it hides." },
         { "FP0017", Lint.AdapterAttribute + " namespace App.Core { [ImperativeAdapter] static class Clock { } }", "functional_lint.adapter_namespaces = App.Adapters",
             "'Clock' is an [ImperativeAdapter] outside 'App.Adapters'. Move it there, or pass the value in." },
+        { "FP0015", "static class C { static string M(object o) => (string)o; }", null,
+            "'(string)o' throws when the value isn't a 'string'. Use a pattern such as 'is string value' instead." },
+        { "FP0015", "static class C { static int M(int a, int b) => a / b; }", null,
+            "'a / b' throws when 'b' is 0. Use 'b != 0 ? ... : fallback' instead." },
+        { "FP0021", "static class C { static string M(System.Collections.Immutable.ImmutableHashSet<string> s) => string.Join(\",\", s); }", null,
+            "'string.Join(\",\", s)' takes the order of a hash set or dictionary, which changes between runs. Sort it first with 'Order()'." },
         { "FP0020", "static class C { static void M() => System.GC.Collect(); }", null,
             "'GC.Collect' is outside the .NET subset a core may use. Move it to a shell project, or ask the owner to allow it." },
         { "FP0019", "static class C { static string M(string? s) => s!; }", null,
@@ -184,7 +190,7 @@ public class MessageTests
         Assert.True(sentences.Length >= 2, $"{id}: '{message}' should state the problem and then the remedy.");
 
         // The remedy is an instruction, so it starts with a verb.
-        string[] verbs = ["Use", "Bind", "Mark", "Declare", "Call", "Return", "Map", "List", "Build", "Move", "Remove", "Restore", "Handle", "Take", "Rewrite"];
+        string[] verbs = ["Use", "Bind", "Mark", "Declare", "Call", "Return", "Map", "List", "Build", "Move", "Remove", "Restore", "Handle", "Take", "Rewrite", "Sort"];
         var remedy = sentences.Last();
         Assert.True(verbs.Any(v => remedy.StartsWith(v)),
             $"{id}: remedy '{remedy}' should start with one of: {string.Join(", ", verbs)}.");

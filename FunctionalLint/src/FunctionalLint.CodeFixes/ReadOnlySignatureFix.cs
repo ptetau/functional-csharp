@@ -102,7 +102,7 @@ public sealed class ReadOnlySignatureFix : CodeFixProvider
             // Step over the argument list to the generic type that holds it, if this argument is covariant there.
             TypeArgumentListSyntax { Parent: GenericNameSyntax generic } arguments =>
                 model.GetSymbolInfo(generic).Symbol is INamedTypeSymbol type
-                && arguments.Arguments.IndexOf((TypeSyntax)node) is var index && index >= 0
+                && node is TypeSyntax argument && arguments.Arguments.IndexOf(argument) is var index && index >= 0
                 && (type.OriginalDefinition.TypeParameters[index].Variance == VarianceKind.Out || IsAsyncResult(generic, type, outermost))
                 && OnlyInCovariantPositions(model, generic, outermost),
             _ => false,

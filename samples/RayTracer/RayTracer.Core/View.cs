@@ -38,7 +38,7 @@ public static class Sampling
     /// otherwise evenly spaced along the top-left to bottom-right diagonal.
     /// </summary>
     public static ImmutableArray<Offset> Offsets(int samples) =>
-        (int)Math.Round(Math.Sqrt(samples)) is var side && side * side == samples
+        (int)Math.Round(Math.Sqrt(samples)) is var side && side > 0 && side * side == samples
             ? Enumerable.Range(0, samples)
                 .Select(i => new Offset((i % side + 0.5) / side, (i / side + 0.5) / side))
                 .ToImmutableArray()

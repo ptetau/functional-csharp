@@ -43,7 +43,7 @@ public sealed partial class FunctionalAnalyzer
         "System.Nullable", "System.Nullable`1", "System.Index", "System.Range", "System.ReadOnlySpan`1", "System.ReadOnlyMemory`1",
         "System.MemoryExtensions", "System.StringComparison", "System.StringComparer", "System.StringSplitOptions",
         "System.MidpointRounding", "System.Base64FormattingOptions", "System.Lazy`1", "System.FormattableString",
-        "System.IComparable", "System.IComparable`1", "System.IEquatable`1", "System.IFormattable", "System.IFormatProvider",
+        "System.IComparable", "System.IComparable`1", "System.IConvertible", "System.IEquatable`1", "System.IFormattable", "System.IFormatProvider",
         "System.ISpanFormattable", "System.IParsable`1", "System.ISpanParsable`1", "System.Comparison`1", "System.Predicate`1",
         "System.Converter`2", "System.Attribute", "System.AttributeUsageAttribute", "System.AttributeTargets",
         "System.FlagsAttribute", "System.ObsoleteAttribute", "System.Tuple", "System.ValueTuple",
