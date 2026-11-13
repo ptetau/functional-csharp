@@ -75,12 +75,12 @@ public static class Lint
     }
 
     // Rule tests often use syntax outside the subset on purpose (an out parameter, async, an event) to test another
-    // rule. FP0019 has its own tests, so it's only checked where a test marks it.
-    private const string Subset = "FP0019";
+    // rule. FP0019 and FP0020 (the subsets) have their own tests, so they're only checked where a test marks them.
+    private static readonly string[] Subsets = ["FP0019", "FP0020"];
 
     private static void TestOneRule(AnalyzerTest<DefaultVerifier> test, string sources)
     {
-        if (!sources.Contains("{|" + Subset + ":")) test.DisabledDiagnostics.Add(Subset);
+        foreach (var id in Subsets.Where(id => !sources.Contains("{|" + id + ":"))) test.DisabledDiagnostics.Add(id);
     }
 
     /// <summary>A diagnostic as a developer or agent would see it: the rule, the code it points at, and the message.</summary>
@@ -97,7 +97,7 @@ public static class Lint
         var diagnostics = await analyzers.GetAnalyzerDiagnosticsAsync();
         var text = compilation.SyntaxTrees.First().GetText();
         return diagnostics
-            .Where(d => subset || d.Id != Subset)
+            .Where(d => subset || !Subsets.Contains(d.Id))
             .OrderBy(d => d.Location.SourceSpan.Start)
             .Select(d => new Finding(d.Id, d.Location.IsInSource ? text.ToString(d.Location.SourceSpan) : "", d.GetMessage()))
             .ToImmutableArray();

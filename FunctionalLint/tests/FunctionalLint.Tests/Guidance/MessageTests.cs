@@ -106,6 +106,8 @@ public class MessageTests
             "'#pragma warning disable CS0168' turns checks off. Remove it and fix the code it hides." },
         { "FP0017", Lint.AdapterAttribute + " namespace App.Core { [ImperativeAdapter] static class Clock { } }", "functional_lint.adapter_namespaces = App.Adapters",
             "'Clock' is an [ImperativeAdapter] outside 'App.Adapters'. Move it there, or pass the value in." },
+        { "FP0020", "static class C { static void M() => System.GC.Collect(); }", null,
+            "'GC.Collect' is outside the .NET subset a core may use. Move it to a shell project, or ask the owner to allow it." },
         { "FP0019", "static class C { static string M(string? s) => s!; }", null,
             "'!' is outside the subset: it hides a possible null. Handle the null: a pattern, ??, or an Option." },
         { "FP0019", "static class C { static bool M(string s, out int n) { n = s.Length; return true; } }", null,
@@ -148,7 +150,7 @@ public class MessageTests
     [MemberData(nameof(Messages))]
     public async Task Each_message_reads_exactly_as_expected(string id, string source, string? config, string expected)
     {
-        var finding = Assert.Single(await Diagnose(source, config, subset: id == "FP0019"));
+        var finding = Assert.Single(await Diagnose(source, config, subset: id is "FP0019" or "FP0020"));
         Assert.Equal(id, finding.Id);
         Assert.Equal(expected, finding.Message);
     }

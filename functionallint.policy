@@ -22,5 +22,9 @@ functional_lint.adapter_namespaces = Functional.Adapters, FunctionalLint.Adapter
 # What a core may reference besides the .NET base library.
 functional_lint.allowed_references = Functional, FunctionalLint, Microsoft.CodeAnalysis*, System.Collections.Immutable, System.Composition.AttributedModel
 
+# Parts of .NET a core may use beyond the built-in subset (FP0020): a namespace, a type or a member.
+# The code fixes return Roslyn's Tasks: that's the contract a code fix plugs into.
+functional_lint.allowed_apis = System.Threading.Tasks.Task.FromResult, System.Threading.Tasks.Task.ConfigureAwait
+
 # Extra side-effecting APIs to report (FP0011), on top of the built-in list.
 functional_lint.impure_apis =

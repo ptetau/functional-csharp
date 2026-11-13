@@ -169,7 +169,7 @@ public sealed partial class FunctionalAnalyzer : DiagnosticAnalyzer
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics { get; } = ImmutableArray.Create(
         NoLoops, NoMutation, NoMutableState, NoObjects, NoMutableTypes, NoDirectImperative,
         NoThrow, MutableSignature, AdapterLeak, AsyncVoid, ImpureApi, IgnoredResult, ExhaustiveSwitch,
-        ReferenceEqualityInRecord, ThrowingCall, RuleSwitchedOff, AdapterPlacement, ReferenceOutsidePolicy, OutsideSubset);
+        ReferenceEqualityInRecord, ThrowingCall, RuleSwitchedOff, AdapterPlacement, ReferenceOutsidePolicy, OutsideSubset, OutsideApiSubset);
 
     // Configuration -----------------------------------------------------------
 
@@ -385,6 +385,25 @@ public sealed partial class FunctionalAnalyzer : DiagnosticAnalyzer
                 var extra = OptionValue(ctx.Options, ctx.Operation.Syntax.SyntaxTree, ImpureApisKey);
                 var apis = impureByConfig.Get(extra, e => ImpureApis.Create(compilation, e));
                 AnalyzeImpure(ctx, apis);
+            }), ReferenceKinds);
+
+            // FP0020: the .NET subset. Side effects (FP0011) and mutable collections (FP0005) are reported by their
+            // own rules. A library's contract is allowed where it's implemented: an override or interface
+            // implementation may call the member it implements (GetEnumerator forwarding to the inner list), and
+            // a GetHashCode override may hash.
+            var apiCoreFolder = BaseLibraryFolder(compilation);
+            var dotNet = Memo.OfSymbols<IAssemblySymbol, bool>();
+            start.RegisterOperationAction(GuardOp(ctx =>
+            {
+                var tree = ctx.Operation.Syntax.SyntaxTree;
+                var extra = PolicyList(ctx.Options.AnalyzerConfigOptionsProvider.GetOptions(tree), AllowedApisKey) ?? ImmutableArray<string>.Empty;
+                var apis = impureByConfig.Get(OptionValue(ctx.Options, tree, ImpureApisKey), e => ImpureApis.Create(compilation, e));
+                var implementing = ctx.ContainingSymbol is IMethodSymbol method
+                    && (method.IsOverride || !method.ExplicitInterfaceImplementations.IsEmpty) ? method : null;
+                AnalyzeApiUse(ctx, extra, apiCoreFolder, dotNet, (member, type) =>
+                    apis.Contains(member, type) || mutableTypes.ContainsKey(type.OriginalDefinition)
+                    || implementing is not null && implementing.Name.EndsWith(member.Name, StringComparison.Ordinal)
+                    || implementing is { Name: "GetHashCode" } && type.Name == "HashCode");
             }), ReferenceKinds);
         });
     }
