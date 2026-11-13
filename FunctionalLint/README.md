@@ -174,7 +174,7 @@ FP0017 and FP0018 are off without a policy.
 
 The policy only helps if the agent can't edit it. There are three layers, from cheapest to strongest:
 
-1. **Claude Code permissions.** [`agents/claude-settings.json`](agents/claude-settings.json) denies edits to project and build files, `.editorconfig`, `*.globalconfig` and the policy. Claude then has to ask you. It's merged with the hook below. Verified in a live session: the edits were refused, and edits to `.cs` files still worked. A shell command could still change a file, which is what the other two layers are for.
+1. **Claude Code permissions.** [`agents/claude-settings.json`](agents/claude-settings.json) denies edits to project and build files, `.editorconfig`, `*.globalconfig` and the policy. Claude then has to ask you. It's merged with the hooks below. Verified in a live session: the edits were refused, and edits to `.cs` files still worked. A shell command could still change a file: the Stop hook below checks those before Claude finishes, and CI checks everything.
 2. **CI checks pull requests against main's policy.** The workflow copies `functionallint.policy` from the base branch and points `FUNCTIONALLINT_POLICY` at it. A pull request that loosens the policy is checked against the old one, and gets a warning saying so. If `FUNCTIONALLINT_POLICY` names a file that doesn't exist, heal stops with exit 2 rather than check without it.
 3. **For teams: code owners.** Add the policy and build files to `.github/CODEOWNERS`, and require code-owner review in branch protection. (On a repository with one maintainer, this would block your own pull requests.)
 
@@ -236,6 +236,8 @@ Two pieces help a coding agent work in the functional subset.
 - `heal.sh --server-status` says whether it's running.
 - [`agents/hook-smoke-test.sh`](agents/hook-smoke-test.sh) `<a .cs file in a clean core project>` runs the hook and the server end to end: a clean edit, an edit with a loop (rejected), then its rewrite. CI runs it on Linux, macOS and Windows.
 - The first run of all also builds the heal tool, which takes longer.
+
+**Check before finishing.** [`agents/claude-code-stop-hook.sh`](agents/claude-code-stop-hook.sh) is a Claude Code Stop hook, also in `agents/claude-settings.json`. When Claude is about to finish, it checks every functional core with a changed file (by `git status`), whatever changed it. That includes files written by a shell command, which the edit hook never sees. Problems stop Claude once, with the report (exit 2). If Claude stops again with problems left, you see them instead (exit 1), so an agent that can't fix something doesn't loop. Verified in a live session: Claude wrote a loop with `cat`, the Stop hook blocked it with FP0001, and Claude rewrote it with `Sum()`.
 
 **Measure it.** [`agents/eval`](agents/eval/README.md) runs Claude Code headless on fixed tasks in a fresh core project with this setup, and scores the runs. Some tasks invite a bypass on purpose. In the baseline, none of 8 runs tried to switch a check off, and all 8 ended with a clean gate and build.
 

@@ -80,6 +80,32 @@ public static class Gate
                     Path.GetRelativePath(policy.Root, nested).Replace('\\', '/'),
                     $"would replace the root policy for '{project.Name}' in the build", "Remove it, and change the root policy instead.");
         }
+
+        foreach (var generator in UncheckedGenerators(project, policy))
+            yield return Diagnostic.Create(Rule, Location.None, generator,
+                $"is a source generator in '{project.Name}', and the code it writes isn't checked", "Remove it, or ask the owner to allow it.");
+    }
+
+    // Source generators add code to the compilation that neither the build's analyzers nor this gate see as the
+    // project's own. .NET's own (from the SDK or a reference pack's analyzers folder) are trusted, and so are ones the
+    // policy lists in allowed_references. FunctionalLint has none.
+    private static IEnumerable<string> UncheckedGenerators(Project project, Policy policy) =>
+        project.AnalyzerReferences
+            .Select(reference => (Reference: reference, Path: (reference.FullPath ?? "").Replace('\\', '/'),
+                Name: System.IO.Path.GetFileNameWithoutExtension(reference.FullPath ?? reference.Display)))
+            .Where(r => !r.Name.StartsWith("FunctionalLint", StringComparison.OrdinalIgnoreCase)
+                && !r.Path.Contains("/packs/", StringComparison.OrdinalIgnoreCase)
+                && !r.Path.Contains("/sdk/", StringComparison.OrdinalIgnoreCase)
+                && !policy.AllowedReferences.Any(a => a.EndsWith('*')
+                    ? r.Name.StartsWith(a[..^1], StringComparison.OrdinalIgnoreCase)
+                    : r.Name.Equals(a, StringComparison.OrdinalIgnoreCase))
+                && HasGenerators(r.Reference))
+            .Select(r => r.Name);
+
+    private static bool HasGenerators(AnalyzerReference reference)
+    {
+        try { return !reference.GetGenerators(LanguageNames.CSharp).IsEmpty; }
+        catch (Exception e) when (e is IOException or BadImageFormatException or System.Reflection.ReflectionTypeLoadException) { return false; }
     }
 
     // 'CS8600', or 'CS8600, CS8601, CS8602 and 60 more'.

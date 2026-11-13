@@ -8,6 +8,8 @@ using FunctionalLint.Heal;
 //                                                     check its project, report problems on stderr
 //   heal --serve                                      keep projects loaded so checks take well under a second
 //   heal --server-status                              say whether the server is running (exit 0 if it is)
+//   heal --stop                                       agent Stop hook: check every core with a changed file (git),
+//                                                     so edits made through a shell are caught before the agent finishes
 // Exit codes: 0 clean, 1 problems remain, 2 couldn't run. In --hook mode problems exit 2,
 // which is how Claude Code hooks hand stderr back to the agent.
 //
@@ -54,6 +56,26 @@ async Task<int> MainAsync()
         if (code is 0 or 3) return 0;   // clean, or not a functional project
         Console.Error.Write(report);
         return 2;
+    }
+
+    if (args.Contains("--stop"))
+    {
+        // Claude Code's Stop hook: before the agent finishes, check every core with a changed file. This catches
+        // what the edit hook can't see, such as files changed by a shell command.
+        var (folder, again) = Hook.StopInput(await Console.In.ReadToEndAsync(), cwd);
+        var projects = Hook.ChangedFiles(folder).Select(Hook.ProjectFor).OfType<string>().Distinct(StringComparer.Ordinal).ToList();
+        var reports = new List<string>();
+        foreach (var project in projects)
+        {
+            var (code, report) = await CheckAsync(project, focus: null, startServer: true);
+            if (code == 1) reports.Add($"{Path.GetFileNameWithoutExtension(project)}:\n{report}");
+        }
+        if (reports.Count == 0) return 0;
+        Console.Error.Write("FunctionalLint: before finishing, fix these problems in the cores you changed (changes made in the shell included):\n"
+            + string.Join("\n", reports));
+        // Stop the agent once (exit 2 hands this to it). If it's already been stopped once, report without stopping
+        // it again (exit 1 shows the user), so an agent that can't fix something doesn't loop.
+        return again ? 1 : 2;
     }
 
     var path = args.FirstOrDefault(a => !a.StartsWith("--"));

@@ -316,4 +316,31 @@ public class GateTests : IDisposable
             await Messages(project));
 
     }
+    [Fact]
+    public async Task Source_generators_outside_dotnet_and_the_policy_are_reported()
+    {
+        // The policy allows Acme.*, so Acme's generator is fine and Contoso's isn't.
+        var project = (await Core(new() { ["Prices.cs"] = "public static class Prices { }" }))
+            .AddAnalyzerReference(new GeneratorReference("Contoso.Generators"))
+            .AddAnalyzerReference(new GeneratorReference("Acme.Generators"));
+
+        Assert.Contains("FP0016: 'Contoso.Generators' is a source generator in 'App.Core', and the code it writes isn't checked. Remove it, or ask the owner to allow it.",
+            await Messages(project));
+        Assert.DoesNotContain(await Messages(project), m => m.Contains("Acme.Generators"));
+    }
+
+    private sealed class EmptyGenerator : IIncrementalGenerator
+    {
+        public void Initialize(IncrementalGeneratorInitializationContext context) { }
+    }
+
+    private sealed class GeneratorReference(string name) : Microsoft.CodeAnalysis.Diagnostics.AnalyzerReference
+    {
+        public override string FullPath => $"/home/me/.nuget/packages/{name.ToLowerInvariant()}/1.0.0/analyzers/dotnet/cs/{name}.dll";
+        public override string Display => name;
+        public override object Id => name;
+        public override System.Collections.Immutable.ImmutableArray<Microsoft.CodeAnalysis.Diagnostics.DiagnosticAnalyzer> GetAnalyzers(string language) => [];
+        public override System.Collections.Immutable.ImmutableArray<Microsoft.CodeAnalysis.Diagnostics.DiagnosticAnalyzer> GetAnalyzersForAllLanguages() => [];
+        public override System.Collections.Immutable.ImmutableArray<ISourceGenerator> GetGenerators(string language) => [new EmptyGenerator().AsSourceGenerator()];
+    }
 }
