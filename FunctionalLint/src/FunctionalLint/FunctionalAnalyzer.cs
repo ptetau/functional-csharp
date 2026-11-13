@@ -35,7 +35,7 @@ namespace FunctionalLint;
 /// functional_lint.legacy_namespaces, is exempt from every rule except FP0009.
 /// </summary>
 [DiagnosticAnalyzer(LanguageNames.CSharp)]
-public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
+public sealed partial class FunctionalAnalyzer : DiagnosticAnalyzer
 {
     // Rules -------------------------------------------------------------------
 
@@ -169,7 +169,7 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics { get; } = ImmutableArray.Create(
         NoLoops, NoMutation, NoMutableState, NoObjects, NoMutableTypes, NoDirectImperative,
         NoThrow, MutableSignature, AdapterLeak, AsyncVoid, ImpureApi, IgnoredResult, ExhaustiveSwitch,
-        ReferenceEqualityInRecord, ThrowingCall, RuleSwitchedOff, AdapterPlacement, ReferenceOutsidePolicy);
+        ReferenceEqualityInRecord, ThrowingCall, RuleSwitchedOff, AdapterPlacement, ReferenceOutsidePolicy, OutsideSubset);
 
     // Configuration -----------------------------------------------------------
 
@@ -313,6 +313,17 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
             var GuardSymbol = guard.Symbol;
 
             start.RegisterOperationAction(GuardOp(AnalyzeLoop), OperationKind.Loop);
+
+            // FP0019: the language subset, one file at a time.
+            start.RegisterSemanticModelAction(ctx =>
+            {
+                var model = ctx.SemanticModel;
+                var allowedExtra = PolicyList(ctx.Options.AnalyzerConfigOptionsProvider.GetOptions(model.SyntaxTree), AllowedSyntaxKey)
+                    ?? ImmutableArray<string>.Empty;
+                Effects.ReportAll(
+                    OutsideTheSubset(model, allowedExtra, node => guard.Skips(model, node, ctx.Options, ctx.CancellationToken), ctx.CancellationToken),
+                    ctx.ReportDiagnostic);
+            });
 
             // FP0018, when the policy sets the allowed references. Each library is judged once per compilation.
             if (PolicyList(start.Options.AnalyzerConfigOptionsProvider.GlobalOptions, AllowedReferencesKey) is { } allowedReferences)
@@ -710,12 +721,14 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
 
         var found = SignatureTypes(symbol)
             .Select(s => (s.Location, Hit: FirstBanned(TypesIn(s.Type), banned)))
-            .Where(s => s.Hit.Type is not null)
-            .Select(s => Diagnostic.Create(MutableSignature, s.Location,
-                symbol is IFieldSymbol
-                    ? $"'{Display(s.Hit.Type!)}' in a field can be changed by any code that can see it."
-                    : $"'{Display(s.Hit.Type!)}' lets callers change the collection.",
-                s.Hit.Alternative));
+            .Select(s => s.Hit is ({ } hit, var alternative)
+                ? Diagnostic.Create(MutableSignature, s.Location,
+                    symbol is IFieldSymbol
+                        ? $"'{Display(hit)}' in a field can be changed by any code that can see it."
+                        : $"'{Display(hit)}' lets callers change the collection.",
+                    alternative)
+                : null)
+            .OfType<Diagnostic>();
         Effects.ReportAll(found, ctx.ReportDiagnostic);
     }
 
@@ -737,8 +750,8 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
 
         var found = SignatureTypes(symbol)
             .Select(s => (s.Location, Hit: TypesIn(s.Type).FirstOrDefault(t => IsInNamespaces(t, legacy))))
-            .Where(s => s.Hit is not null)
-            .Select(s => Diagnostic.Create(AdapterLeak, s.Location, symbol.Name, s.Hit!.Name));
+            .Select(s => s.Hit is { } hit ? Diagnostic.Create(AdapterLeak, s.Location, symbol.Name, hit.Name) : null)
+            .OfType<Diagnostic>();
         Effects.ReportAll(found, ctx.ReportDiagnostic);
     }
 
@@ -896,17 +909,17 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
 
         var members = type.GetMembers()
             .Where(m => !m.IsStatic && !m.IsImplicitlyDeclared && (m is not IPropertySymbol || backed.Contains(m)))
-            .Select(m => m switch
+            .SelectMany(m => m switch
             {
-                IPropertySymbol p => (Symbol: (ISymbol)p, p.Type),
-                IFieldSymbol f => (Symbol: f, f.Type),
-                _ => (Symbol: m, Type: (ITypeSymbol?)null),
+                IPropertySymbol p => [(Symbol: (ISymbol)p, Type: p.Type)],
+                IFieldSymbol f => [(Symbol: (ISymbol)f, Type: f.Type)],
+                _ => Array.Empty<(ISymbol Symbol, ITypeSymbol Type)>(),
             })
-            .Where(m => m.Type is not null && ComparesByReference(m.Type));
+            .Where(m => ComparesByReference(m.Type));
 
         var found = members.Select(m =>
         {
-            var isMap = m.Type!.AllInterfaces.Concat(m.Type is INamedTypeSymbol n ? [n] : [])
+            var isMap = m.Type.AllInterfaces.Concat(m.Type is INamedTypeSymbol n ? [n] : [])
                 .Any(i => i.OriginalDefinition.ToDisplayString() is "System.Collections.Generic.IReadOnlyDictionary<TKey, TValue>"
                     or "System.Collections.Generic.IDictionary<TKey, TValue>");
             // Suggest a type the project can actually use; without one, the rule's docs show one to copy.
@@ -960,8 +973,8 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
             IPropertyReferenceOperation property => ThrowingIndexer(property),
             _ => default,
         };
-        if (name is null) return;
-        Report(ctx, ThrowingCall, ctx.Operation.Syntax, name, when!, instead!);
+        if ((name, when, instead) is not ({ } what, { } throwsWhen, { } alternative)) return;
+        Report(ctx, ThrowingCall, ctx.Operation.Syntax, what, throwsWhen, alternative);
     }
 
     private static (string? Name, string? When, string? Instead) ThrowingMethod(IInvocationOperation op)
@@ -1410,8 +1423,10 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
     // Found here so the scan works without a semantic model; global aliases in other files need one.
     private static ImmutableArray<(string Alias, string Target)> Aliases(SyntaxNode root) =>
         root.DescendantNodes().OfType<UsingDirectiveSyntax>()
-            .Where(u => u.Alias is not null && u.Name is not null)
-            .Select(u => (Alias: u.Alias!.Name.Identifier.ValueText, Target: LastName(u.Name!.ToString())))
+            .Select(u => u is { Alias: { } alias, Name: { } name }
+                ? (Alias: alias.Name.Identifier.ValueText, Target: LastName(name.ToString()))
+                : ((string Alias, string Target)?)null)
+            .OfType<(string Alias, string Target)>()
             .ToImmutableArray();
 
     private static SwitchOffAttribute AttributeKind(AttributeSyntax attribute, SemanticModel? model,
@@ -1463,8 +1478,9 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
         if (PolicyList(ctx.Options.AnalyzerConfigOptionsProvider.GetOptions(attribute.SyntaxTree), AdapterNamespacesKey) is not { } allowed) return;
 
         // What it marks: a type, member, local function or lambda. Its namespace is what counts.
-        var marked = ctx.SemanticModel.GetDeclaredSymbol(attribute.Parent!.Parent!, ctx.CancellationToken)
-            ?? ctx.SemanticModel.GetSymbolInfo(attribute.Parent!.Parent!, ctx.CancellationToken).Symbol
+        if (attribute.Parent?.Parent is not { } target) return;
+        var marked = ctx.SemanticModel.GetDeclaredSymbol(target, ctx.CancellationToken)
+            ?? ctx.SemanticModel.GetSymbolInfo(target, ctx.CancellationToken).Symbol
             ?? ctx.ContainingSymbol;
         if (marked is null || IsInNamespaces(marked, allowed)) return;
 
@@ -1558,6 +1574,18 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
             if (tree is not null && !Exempt(ctx.Symbol, ctx.Options, tree)) rule(ctx);
         };
 
+        // For syntax: whether the code around a node is exempt. Both the declaration it's part of (a method marked
+        // [ImperativeAdapter]) and the code it's in (a lambda marked, in a method that isn't) count.
+        public bool Skips(SemanticModel model, SyntaxNode node, AnalyzerOptions options, System.Threading.CancellationToken ct)
+        {
+            var declared = node.AncestorsAndSelf()
+                .Where(a => a is MemberDeclarationSyntax or LocalFunctionStatementSyntax)
+                .Select(a => model.GetDeclaredSymbol(a, ct))
+                .FirstOrDefault(s => s is not null);
+            var enclosing = model.GetEnclosingSymbol(node.SpanStart, ct);
+            return new[] { declared, enclosing }.OfType<ISymbol>().Any(s => Exempt(s, options, model.SyntaxTree));
+        }
+
         private bool Exempt(ISymbol symbol, AnalyzerOptions options, SyntaxTree tree) =>
             ExemptSymbols.Get(symbol, s => IsExempt(s, Legacy.Get(tree, t => LegacyNamespaces(options, t))));
 
@@ -1606,9 +1634,11 @@ public sealed class FunctionalAnalyzer : DiagnosticAnalyzer
     // The types a compilation has, with their alternatives. Where an entry repeats, the last one wins.
     private static IReadOnlyDictionary<ISymbol, string> Resolve(Compilation compilation, IEnumerable<(string MetadataName, string Alternative)> entries) =>
         entries
-            .Select(e => (Type: (ISymbol?)compilation.GetTypeByMetadataName(e.MetadataName), e.Alternative))
-            .Where(e => e.Type is not null)
-            .GroupBy(e => e.Type!, SymbolEqualityComparer.Default)
+            .Select(e => compilation.GetTypeByMetadataName(e.MetadataName) is { } type
+                ? (Type: (ISymbol)type, e.Alternative)
+                : ((ISymbol Type, string Alternative)?)null)
+            .OfType<(ISymbol Type, string Alternative)>()
+            .GroupBy(e => e.Type, SymbolEqualityComparer.Default)
             .ToImmutableDictionary(g => g.Key, g => g.Last().Alternative, SymbolEqualityComparer.Default);
 
     // The first type `banned` lists, with its alternative.

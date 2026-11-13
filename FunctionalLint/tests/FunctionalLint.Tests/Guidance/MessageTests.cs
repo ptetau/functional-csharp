@@ -106,6 +106,12 @@ public class MessageTests
             "'#pragma warning disable CS0168' turns checks off. Remove it and fix the code it hides." },
         { "FP0017", Lint.AdapterAttribute + " namespace App.Core { [ImperativeAdapter] static class Clock { } }", "functional_lint.adapter_namespaces = App.Adapters",
             "'Clock' is an [ImperativeAdapter] outside 'App.Adapters'. Move it there, or pass the value in." },
+        { "FP0019", "static class C { static string M(string? s) => s!; }", null,
+            "'!' is outside the subset: it hides a possible null. Handle the null: a pattern, ??, or an Option." },
+        { "FP0019", "static class C { static bool M(string s, out int n) { n = s.Length; return true; } }", null,
+            "'out' is outside the subset: it writes to the caller's variable. Return a tuple, an Option or a Result." },
+        { "FP0019", "static class C { static readonly object Gate = new(); static int M() { lock (Gate) { return 1; } } }", null,
+            "'lock' is outside the subset: a core has no shared state to guard. Move it to a shell project." },
         { "FP0001", "static class C { static void M(System.Collections.Immutable.ImmutableList<int> xs) => xs.ForEach(x => { }); }", null,
             "'ForEach' loops are not allowed. Use LINQ, Aggregate or recursion instead." },
         { "FP0005", "static class C { static int M() { System.Collections.Generic.IList<int> xs = [1]; return xs.Count; } }", null,
@@ -142,7 +148,7 @@ public class MessageTests
     [MemberData(nameof(Messages))]
     public async Task Each_message_reads_exactly_as_expected(string id, string source, string? config, string expected)
     {
-        var finding = Assert.Single(await Diagnose(source, config));
+        var finding = Assert.Single(await Diagnose(source, config, subset: id == "FP0019"));
         Assert.Equal(id, finding.Id);
         Assert.Equal(expected, finding.Message);
     }
@@ -176,7 +182,7 @@ public class MessageTests
         Assert.True(sentences.Length >= 2, $"{id}: '{message}' should state the problem and then the remedy.");
 
         // The remedy is an instruction, so it starts with a verb.
-        string[] verbs = ["Use", "Bind", "Mark", "Declare", "Call", "Return", "Map", "List", "Build", "Move", "Remove", "Restore"];
+        string[] verbs = ["Use", "Bind", "Mark", "Declare", "Call", "Return", "Map", "List", "Build", "Move", "Remove", "Restore", "Handle", "Take", "Rewrite"];
         var remedy = sentences.Last();
         Assert.True(verbs.Any(v => remedy.StartsWith(v)),
             $"{id}: remedy '{remedy}' should start with one of: {string.Join(", ", verbs)}.");

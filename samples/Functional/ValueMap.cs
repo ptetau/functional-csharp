@@ -6,7 +6,7 @@ namespace Functional;
 /// <summary>
 /// An immutable dictionary that is equal to another with the same keys and values. Use it in records instead of
 /// <see cref="ImmutableDictionary{TKey,TValue}"/>, which compares by reference. <c>default</c> is empty.
-/// Lookups never throw: use <see cref="Find"/>, <see cref="TryGetValue"/> or <see cref="GetValueOrDefault"/>.
+/// Lookups never throw: use <see cref="Find"/> or <see cref="GetValueOrDefault"/>.
 /// </summary>
 [ValueEquality]
 [System.Text.Json.Serialization.JsonConverter(typeof(Adapters.ValueListJsonConverter))]
@@ -28,7 +28,6 @@ public readonly struct ValueMap<TKey, TValue> : IReadOnlyCollection<KeyValuePair
     public IEnumerable<TValue> Values => Items.Values;
 
     public bool ContainsKey(TKey key) => Items.ContainsKey(key);
-    public bool TryGetValue(TKey key, out TValue value) => Items.TryGetValue(key, out value!);
     public TValue? GetValueOrDefault(TKey key) => Items.GetValueOrDefault(key);
     public Option<TValue> Find(TKey key) => Items.TryGetValue(key, out var value) ? Option.Some(value) : Option.None<TValue>();
 

@@ -49,6 +49,7 @@ public static class Lint
         // The framework would add '#pragma warning disable' to check each diagnostic can be suppressed. FP0016
         // reports exactly that pragma, by design, so skip the check.
         test.TestBehaviors |= TestBehaviors.SkipSuppressionCheck;
+        TestOneRule(test, source);
         return test.RunAsync();
     }
 
@@ -69,7 +70,17 @@ public static class Lint
         // are left on purpose (e.g. `new List<int>()` under FP0005), so read the markup as written.
         test.FixedState.MarkupHandling = MarkupMode.Allow;
         test.TestBehaviors |= TestBehaviors.SkipSuppressionCheck;
+        TestOneRule(test, before + after);
         return test.RunAsync();
+    }
+
+    // Rule tests often use syntax outside the subset on purpose (an out parameter, async, an event) to test another
+    // rule. FP0019 has its own tests, so it's only checked where a test marks it.
+    private const string Subset = "FP0019";
+
+    private static void TestOneRule(AnalyzerTest<DefaultVerifier> test, string sources)
+    {
+        if (!sources.Contains("{|" + Subset + ":")) test.DisabledDiagnostics.Add(Subset);
     }
 
     /// <summary>A diagnostic as a developer or agent would see it: the rule, the code it points at, and the message.</summary>
@@ -80,12 +91,13 @@ public static class Lint
     /// Compiler errors are ignored, so this works on half-written code.
     /// </summary>
     public static async Task<ImmutableArray<Finding>> Diagnose(string source, string? config = null,
-        OutputKind kind = OutputKind.DynamicallyLinkedLibrary)
+        OutputKind kind = OutputKind.DynamicallyLinkedLibrary, bool subset = false)
     {
         var (compilation, analyzers) = await Prepare(source, config, kind);
         var diagnostics = await analyzers.GetAnalyzerDiagnosticsAsync();
         var text = compilation.SyntaxTrees.First().GetText();
         return diagnostics
+            .Where(d => subset || d.Id != Subset)
             .OrderBy(d => d.Location.SourceSpan.Start)
             .Select(d => new Finding(d.Id, d.Location.IsInSource ? text.ToString(d.Location.SourceSpan) : "", d.GetMessage()))
             .ToImmutableArray();
