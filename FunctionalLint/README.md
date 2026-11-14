@@ -20,10 +20,13 @@ A Roslyn analyzer that keeps a C# project functional. It reports errors at build
 | [FP0012](docs/rules/FP0012.md) | Ignoring the result of `list.Add(x)`, LINQ, string, date or `Math` methods, or methods on your own records | Use the result: `var updated = list.Add(x)` | |
 | [FP0013](docs/rules/FP0013.md) | Catch-all arms (`_`, `var x`, `object`...), switch statements and switching on a cast, over enums, `closed` types and unions | A switch expression that lists every case | |
 | [FP0014](docs/rules/FP0014.md) | Collections that compare by reference (`ImmutableArray`, lists, arrays) inside records | `ValueList<T>` or another `[ValueEquality]` type | |
-| [FP0015](docs/rules/FP0015.md) | Calls that throw: `First`, `Single`, `Parse`, `dict[key]`, `ToDictionary`... | `FirstOrDefault`, list patterns, `TryParse`, `TryGetValue` | |
+| [FP0015](docs/rules/FP0015.md) | Calls that throw: `First`, `Single`, `Parse`, `dict[key]`, `ToDictionary`..., downcasts, integer division by what may be 0 | `FirstOrDefault`, list patterns, `TryParse`, `TryGetValue`; patterns instead of downcasts; check for 0 before dividing | |
 | [FP0016](docs/rules/FP0016.md) | `#pragma warning disable`, `[SuppressMessage]`, `#nullable disable`; with a policy, also lowered rules and compiler checks, nullable or analyzers off, code marked generated, a second policy file, a core that stopped loading FunctionalLint | Fix what the rule reports | |
 | [FP0017](docs/rules/FP0017.md) | With a policy: `[ImperativeAdapter]` outside the policy's adapter namespaces | Pass the value in, or move the adapter | |
 | [FP0018](docs/rules/FP0018.md) | With a policy: using a library beyond the .NET base library and the policy's list | Move that code to a shell project | |
+| [FP0019](docs/rules/FP0019.md) | Any syntax outside the subset in `Subset.cs`: `lock`, `try`, `using`, events, `unsafe`, `ref`/`out`, `async`, `checked`, `!`, `dynamic`... and anything a future C# adds | The subset's features: records, expressions, patterns, LINQ | |
+| [FP0020](docs/rules/FP0020.md) | Any part of .NET outside the subset in `ApiSubset.cs`: threads, `GC`, interop, reflection, hash codes, enumerators... | LINQ, immutable collections, strings, numbers, dates; the rest in a shell project | |
+| [FP0021](docs/rules/FP0021.md) | Showing a hash set's or dictionary's order: `string.Join(", ", set)`, `set.ToImmutableArray()`, `set.First()` | `Order()` / `OrderBy(...)` first, or a sorted collection | |
 
 Each rule's page has a before/after example. The build output links to it.
 
@@ -171,7 +174,7 @@ FP0017 and FP0018 are off without a policy.
 
 The policy only helps if the agent can't edit it. There are three layers, from cheapest to strongest:
 
-1. **Claude Code permissions.** [`agents/claude-settings.json`](agents/claude-settings.json) denies edits to project and build files, `.editorconfig`, `*.globalconfig` and the policy. Claude then has to ask you. It's merged with the hook below. Verified in a live session: the edits were refused, and edits to `.cs` files still worked. A shell command could still change a file, which is what the other two layers are for.
+1. **Claude Code permissions.** [`agents/claude-settings.json`](agents/claude-settings.json) denies edits to project and build files, `.editorconfig`, `*.globalconfig` and the policy. Claude then has to ask you. It's merged with the hooks below. Verified in a live session: the edits were refused, and edits to `.cs` files still worked. A shell command could still change a file: the Stop hook below checks those before Claude finishes, and CI checks everything.
 2. **CI checks pull requests against main's policy.** The workflow copies `functionallint.policy` from the base branch and points `FUNCTIONALLINT_POLICY` at it. A pull request that loosens the policy is checked against the old one, and gets a warning saying so. If `FUNCTIONALLINT_POLICY` names a file that doesn't exist, heal stops with exit 2 rather than check without it.
 3. **For teams: code owners.** Add the policy and build files to `.github/CODEOWNERS`, and require code-owner review in branch protection. (On a repository with one maintainer, this would block your own pull requests.)
 
@@ -234,6 +237,8 @@ Two pieces help a coding agent work in the functional subset.
 - [`agents/hook-smoke-test.sh`](agents/hook-smoke-test.sh) `<a .cs file in a clean core project>` runs the hook and the server end to end: a clean edit, an edit with a loop (rejected), then its rewrite. CI runs it on Linux, macOS and Windows.
 - The first run of all also builds the heal tool, which takes longer.
 
+**Check before finishing.** [`agents/claude-code-stop-hook.sh`](agents/claude-code-stop-hook.sh) is a Claude Code Stop hook, also in `agents/claude-settings.json`. When Claude is about to finish, it checks every functional core with a changed file (by `git status`), whatever changed it. That includes files written by a shell command, which the edit hook never sees. Problems stop Claude once, with the report (exit 2). If Claude stops again with problems left, you see them instead (exit 1), so an agent that can't fix something doesn't loop. Verified in a live session: Claude wrote a loop with `cat`, the Stop hook blocked it with FP0001, and Claude rewrote it with `Sum()`.
+
 **Measure it.** [`agents/eval`](agents/eval/README.md) runs Claude Code headless on fixed tasks in a fresh core project with this setup, and scores the runs. Some tasks invite a bypass on purpose. In the baseline, none of 8 runs tried to switch a check off, and all 8 ended with a clean gate and build.
 
 Other agents can use the same check: `dotnet FunctionalLint/tools/FunctionalLint.Heal/bin/Release/net11.0/FunctionalLint.Heal.dll --hook` reads `{"tool_input": {"file_path": "..."}}` on stdin and exits 2 with the problems on stderr.
@@ -274,7 +279,7 @@ FunctionalLint is checked by itself. The analyzer and code fixes are gate-only c
 
 - **Mutating methods on library types.** `Array.Sort`, `Array.Fill`, `CopyTo` into an existing array and similar are caught (FP0002), but a method that changes a mutable object from a library isn't. FP0005 and FP0008 keep most mutable collections out in the first place.
 - **Mutable objects in readonly fields**, such as a `static readonly JsonSerializerOptions`. `readonly` protects only the reference.
-- **Every way to throw.** FP0015 covers the common calls; indexers on arrays and lists, overflow and casts aren't covered. Random-input tests find the rest: see [FP0015](docs/rules/FP0015.md#what-it-doesnt-cover).
+- **Every way to throw.** FP0015 covers the common calls, downcasts and division by what may be 0; indexing an array or list out of range isn't covered. Random-input tests find the rest: see [FP0015](docs/rules/FP0015.md#what-it-doesnt-cover).
 - **Mutation inside libraries you call.**
 - **Arrays in signatures.** Arrays are allowed, but writing to an element is flagged.
 

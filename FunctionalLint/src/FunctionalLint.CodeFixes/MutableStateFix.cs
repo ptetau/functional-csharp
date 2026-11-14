@@ -3,6 +3,7 @@ using System.Composition;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using FunctionalLint.Adapters;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CodeActions;
 using Microsoft.CodeAnalysis.CodeFixes;
@@ -25,15 +26,16 @@ public sealed class MutableStateFix : CodeFixProvider
 
     public override async Task RegisterCodeFixesAsync(CodeFixContext context)
     {
-        var found = await FixHelpers.TokenAt(context.Document, context.Span, context.CancellationToken).ConfigureAwait(false);
+        var found = await Documents.TokenAt(context.Document, context.Span, context.CancellationToken).ConfigureAwait(false);
         if (found is not var (root, token)) return;
         var diagnostic = context.Diagnostics[0];
         var document = context.Document;
+        var model = await document.GetSemanticModelAsync(context.CancellationToken).ConfigureAwait(false);
 
         switch (token.Parent)
         {
             case VariableDeclaratorSyntax { Parent.Parent: FieldDeclarationSyntax field } declarator
-                when await CanBeReadonlyAsync(document, declarator, context.CancellationToken).ConfigureAwait(false):
+                when CanBeReadonly(model, declarator, context.CancellationToken):
                 Register(context, diagnostic, "Make field readonly", "FP0003",
                     () => FixHelpers.Replace(document, root, field, MakeReadonly(field)));
                 break;
@@ -46,7 +48,7 @@ public sealed class MutableStateFix : CodeFixProvider
                     if (setter.Body is null && setter.ExpressionBody is null)
                         Register(context, diagnostic, "Remove the setter", "FP0003",
                             () => FixHelpers.Replace(document, root, property,
-                                property.WithAccessorList(property.AccessorList!.RemoveNode(setter, SyntaxRemoveOptions.KeepNoTrivia))));
+                                property.WithAccessorList(property.AccessorList?.RemoveNode(setter, SyntaxRemoveOptions.KeepNoTrivia))));
                 }
                 else
                 {
@@ -73,9 +75,8 @@ public sealed class MutableStateFix : CodeFixProvider
     //
     // The field's type must also copy safely. Calling a method on a readonly field of a mutable struct runs it on a
     // copy, so `_items.MoveNext()` on an `ImmutableArray<int>.Enumerator` would stop moving: that field is left alone.
-    private static async Task<bool> CanBeReadonlyAsync(Document document, VariableDeclaratorSyntax declarator, CancellationToken ct)
+    private static bool CanBeReadonly(SemanticModel? model, VariableDeclaratorSyntax declarator, CancellationToken ct)
     {
-        var model = await document.GetSemanticModelAsync(ct).ConfigureAwait(false);
         if (model?.GetDeclaredSymbol(declarator, ct) is not IFieldSymbol field) return false;
         if (!CopiesSafely(field.Type)) return false;
         if (declarator.Initializer is not null) return true;

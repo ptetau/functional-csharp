@@ -2,6 +2,7 @@ using System.Collections.Immutable;
 using System.Composition;
 using System.Linq;
 using System.Threading.Tasks;
+using FunctionalLint.Adapters;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CodeActions;
 using Microsoft.CodeAnalysis.CodeFixes;
@@ -26,7 +27,7 @@ public sealed class AsyncVoidFix : CodeFixProvider
 
     public override async Task RegisterCodeFixesAsync(CodeFixContext context)
     {
-        var found = await FixHelpers.TokenAt(context.Document, context.Span, context.CancellationToken).ConfigureAwait(false);
+        var found = await Documents.TokenAt(context.Document, context.Span, context.CancellationToken).ConfigureAwait(false);
         if (found is not var (root, token)) return;
 
         var (declaration, returnType) = token.Parent switch

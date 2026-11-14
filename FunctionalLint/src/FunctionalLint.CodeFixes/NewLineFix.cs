@@ -46,11 +46,12 @@ public sealed class NewLineFix : CodeFixProvider
             return;
         }
 
-        if (node.AncestorsAndSelf().OfType<AssignmentExpressionSyntax>().FirstOrDefault() is not { } indent
+        if (addProperty is null
+            || node.AncestorsAndSelf().OfType<AssignmentExpressionSyntax>().FirstOrDefault() is not { } indent
             || indent.Parent is not InitializerExpressionSyntax initializer) return;
 
         context.RegisterCodeFix(CodeAction.Create($"Set {addProperty} = \"\\n\"",
-            _ => Task.FromResult(FixHelpers.Replace(context.Document, root, initializer, WithNewLine(initializer, indent, addProperty!))),
+            _ => Task.FromResult(FixHelpers.Replace(context.Document, root, initializer, WithNewLine(initializer, indent, addProperty))),
             equivalenceKey: "FP0011.NewLine"), diagnostic);
     }
 

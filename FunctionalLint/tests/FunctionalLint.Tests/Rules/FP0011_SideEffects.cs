@@ -142,7 +142,7 @@ public class FP0011_ReflectionDebugAndNetwork
             public static object? E(FieldInfo f) => {|FP0011:f.GetValue(null)|};
             public static object? F(ConstructorInfo c) => {|FP0011:c.Invoke(null)|};
             public static object? G(Delegate d) => {|FP0011:d.DynamicInvoke()|};
-            public static Func<DateTime> H(MethodInfo m) => (Func<DateTime>){|FP0011:m.CreateDelegate(typeof(Func<DateTime>))|};
+            public static Func<DateTime> H(MethodInfo m) => {|FP0015:(Func<DateTime>){|FP0011:m.CreateDelegate(typeof(Func<DateTime>))|}|};
         }
         """);
 

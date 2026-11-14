@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Threading.Tasks;
 using System.Diagnostics;
 using System.IO;
@@ -73,4 +74,47 @@ public class HookExitTests
         Assert.Equal(1, editingOld.Code);
         Assert.Contains("warning FP0003", editingOld.Report);
     }
+    [Fact]
+    public void Reads_the_stop_hooks_folder_and_whether_it_already_stopped_once()
+    {
+        Assert.Equal(("/repo", false), Hook.StopInput("""{"hook_event_name":"Stop","cwd":"/repo","stop_hook_active":false}""", "/x"));
+        Assert.Equal(("/repo", true), Hook.StopInput("""{"cwd":"/repo","stop_hook_active":true}""", "/x"));
+        Assert.Equal(("/x", false), Hook.StopInput("not json", "/x"));
+    }
+
+    [Fact]
+    public void Finds_files_changed_by_anything_including_new_ones()
+    {
+        var root = TempFolder.Create("stop");
+        try
+        {
+            void Git(params string[] args)
+            {
+                var start = new ProcessStartInfo("git", args) { WorkingDirectory = root, RedirectStandardOutput = true, RedirectStandardError = true };
+                using var git = Process.Start(start)!;
+                git.WaitForExit();
+                Assert.Equal(0, git.ExitCode);
+            }
+            Git("init", "-q");
+            Directory.CreateDirectory(Path.Combine(root, "Core"));
+            File.WriteAllText(Path.Combine(root, "Core", "Kept.cs"), "a");
+            File.WriteAllText(Path.Combine(root, "Core", "Gone.cs"), "b");
+            Git("add", "-A");
+            Git("-c", "user.name=t", "-c", "user.email=t@localhost", "commit", "-qm", "start");
+
+            File.WriteAllText(Path.Combine(root, "Core", "Kept.cs"), "changed by a shell command");
+            File.WriteAllText(Path.Combine(root, "Core", "New.cs"), "new");
+            File.Delete(Path.Combine(root, "Core", "Gone.cs"));
+
+            Assert.Equal(new[] { Path.Combine(root, "Core", "Kept.cs"), Path.Combine(root, "Core", "New.cs") },
+                Hook.ChangedFiles(Path.Combine(root, "Core")).Order());
+        }
+        finally
+        {
+            TempFolder.Delete(root);
+        }
+    }
+
+    [Fact]
+    public void Outside_a_repository_nothing_has_changed() => Assert.Empty(Hook.ChangedFiles(TempFolder.Create("no-repo")));
 }

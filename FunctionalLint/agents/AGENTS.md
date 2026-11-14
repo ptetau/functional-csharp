@@ -33,6 +33,11 @@ In hot paths (a ray per pixel, a row per file):
 - "One of these" is a C# 15 `closed record` (or a `union`). Consume it with a switch expression that lists
   every case, never `_`, so adding a case is a compile error until every switch handles it.
 - No `throw`: return a `Result`. No clock, random, I/O, console or current culture: take the value as a parameter.
+- Stay inside the subset (FP0019, FP0020): no `try`/`catch`, `using`, `lock`, events, `async`/`await`, `out`/`ref`
+  parameters, `checked`, `dynamic` or the `!` operator. From .NET use LINQ, immutable collections, strings, numbers,
+  dates, regex and JSON; not threads, reflection, `GetHashCode` or enumerators.
+- Use patterns, not casts that can fail: `shape is Circle c`, not `(Circle)shape`. Check for 0 before integer division.
+- Never show a hash set's or dictionary's order: `string.Join(", ", tags.Order())`, not `string.Join(", ", tags)`.
 - Anything imperative (legacy code, I/O, exceptions) goes in a shell project (the host, CLI or web app), or in an
   `[ImperativeAdapter]` in a namespace `functionallint.policy` allows (FP0017).
 
@@ -40,5 +45,6 @@ When the lint reports problems:
 1. Run `FunctionalLint/heal.sh <project>`. It fixes everything marked `[auto-fixable]` and says what to do differently next time.
 2. Fix what's left by hand. Each message says what to write instead.
 3. Don't silence a rule: no `#pragma`, `[SuppressMessage]`, `#nullable disable`, lowered severities, edits to project
-   files, `.editorconfig`, `*.globalconfig` or `functionallint.policy`, and no adapter just to get past it. The gate
+   files, `.editorconfig`, `*.globalconfig` or `functionallint.policy`, no adapter just to get past it, and no shell
+   commands to write what an edit would be checked for: a Stop hook checks every changed core before you finish. The gate
    reports all of these (FP0016, FP0017), and CI checks against main's policy. If a rule seems wrong, stop and ask.

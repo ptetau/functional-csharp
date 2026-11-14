@@ -3,6 +3,7 @@ using System.Collections.Immutable;
 using System.Composition;
 using System.Linq;
 using System.Threading.Tasks;
+using FunctionalLint.Adapters;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CodeActions;
 using Microsoft.CodeAnalysis.CodeFixes;
@@ -37,7 +38,7 @@ public sealed class ReadOnlySignatureFix : CodeFixProvider
 
     public override async Task RegisterCodeFixesAsync(CodeFixContext context)
     {
-        var found = await FixHelpers.TokenAt(context.Document, context.Span, context.CancellationToken).ConfigureAwait(false);
+        var found = await Documents.TokenAt(context.Document, context.Span, context.CancellationToken).ConfigureAwait(false);
         if (found is not var (root, token)) return;
         var diagnostic = context.Diagnostics[0];
 
@@ -70,7 +71,7 @@ public sealed class ReadOnlySignatureFix : CodeFixProvider
         {
             // `rewritten` already carries any swaps nested inside this name, e.g. IDictionary<string, List<int>>.
             var newType = typeSyntax.ReplaceNodes(swaps.Select(s => s.Name), (original, rewritten) =>
-                rewritten.WithIdentifier(SyntaxFactory.Identifier(swaps.FirstOrDefault(s => s.Name == original).Replacement!)
+                rewritten.WithIdentifier(SyntaxFactory.Identifier(swaps.FirstOrDefault(s => s.Name == original).Replacement ?? original.Identifier.ValueText)
                     .WithTriviaFrom(original.Identifier)));
             return Task.FromResult(context.Document.WithSyntaxRoot(root.ReplaceNode(typeSyntax, newType)));
         }, equivalenceKey: diagnostic.Id), diagnostic);
@@ -96,12 +97,12 @@ public sealed class ReadOnlySignatureFix : CodeFixProvider
     private static bool OnlyInCovariantPositions(SemanticModel model, SyntaxNode node, SyntaxNode outermost) =>
         node == outermost || node.Parent switch
         {
-            QualifiedNameSyntax or AliasQualifiedNameSyntax or NullableTypeSyntax or ArrayTypeSyntax =>
-                OnlyInCovariantPositions(model, node.Parent!, outermost),
+            SyntaxNode parent and (QualifiedNameSyntax or AliasQualifiedNameSyntax or NullableTypeSyntax or ArrayTypeSyntax) =>
+                OnlyInCovariantPositions(model, parent, outermost),
             // Step over the argument list to the generic type that holds it, if this argument is covariant there.
             TypeArgumentListSyntax { Parent: GenericNameSyntax generic } arguments =>
                 model.GetSymbolInfo(generic).Symbol is INamedTypeSymbol type
-                && arguments.Arguments.IndexOf((TypeSyntax)node) is var index && index >= 0
+                && node is TypeSyntax argument && arguments.Arguments.IndexOf(argument) is var index && index >= 0
                 && (type.OriginalDefinition.TypeParameters[index].Variance == VarianceKind.Out || IsAsyncResult(generic, type, outermost))
                 && OnlyInCovariantPositions(model, generic, outermost),
             _ => false,

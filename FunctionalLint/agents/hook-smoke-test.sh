@@ -4,7 +4,8 @@
 #   FunctionalLint/agents/hook-smoke-test.sh path/to/Core/SomeFile.cs
 #
 # The file must be in a functional core project that's clean. A scratch file is added next to it, then removed.
-# Steps: a clean edit passes and starts the server; an edit with a loop fails with FP0001; the rewrite passes.
+# Steps: a clean edit passes and starts the server; an edit with a loop fails with FP0001; the rewrite passes;
+# a loop written by a shell command (which the edit hook never sees) stops the agent at the Stop hook.
 set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 heal="$here/../heal.sh"
@@ -52,4 +53,12 @@ public static class Scratch
 CS
 out="$(hook "$scratch" 2>&1)" || fail "the rewrite was rejected: $out"
 "$heal" --server-status >/dev/null || fail "the check server stopped"
+
+echo "4. A loop written by a shell command is caught when the agent stops"
+printf 'namespace HookSmokeTest;\n\npublic static class Scratch\n{\n    public static int Sum(IReadOnlyList<int> xs)\n    {\n        var total = 0;\n        foreach (var x in xs) total += x;\n        return total;\n    }\n}\n' > "$scratch"
+stop() { printf '{"hook_event_name":"Stop","cwd":"%s","stop_hook_active":%s}' "$(native "$dir")" "$1" | "$here/claude-code-stop-hook.sh"; }
+out="$(stop false 2>&1)"; code=$?
+[[ $code -eq 2 && $out == *FP0001* ]] || fail "expected the Stop hook to exit 2 with FP0001, got $code: $out"
+out="$(stop true 2>&1)"; code=$?
+[[ $code -eq 1 ]] || fail "expected exit 1 when the agent was already stopped once, got $code: $out"
 echo "OK"

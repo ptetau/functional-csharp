@@ -25,9 +25,10 @@ public static class Renderer
         var view = View.Of(scene.Camera, scene.Image);
         var offsets = Sampling.Offsets(scene.Image.Samples);
         var width = scene.Image.Width;
-        var colours = Enumerable.Range(0, Math.Max(0, rows.To - rows.From) * width)
-            .Select(i => Pixel(scene, view, offsets, i % width, rows.From + i / width))
-            .ToImmutableArray();
+        var colours = (
+            from y in Enumerable.Range(rows.From, Math.Max(0, rows.To - rows.From))
+            from x in Enumerable.Range(0, width)
+            select Pixel(scene, view, offsets, x, y)).ToImmutableArray();
         return Enumerable.Range(0, colours.Length * 3)
             .Select(i => ToByte(Channel(colours[i / 3], i % 3)))
             .ToImmutableArray();

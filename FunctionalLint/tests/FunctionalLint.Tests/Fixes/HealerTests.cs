@@ -87,7 +87,9 @@ public class HealerTests
 
         Assert.Equal(new[] { ("FP0003", 2), ("FP0004", 2), ("FP0005", 1), ("FP0008", 1), ("FP0010", 1) },
             result.Fixed.Select(kv => (kv.Key, kv.Value)));
-        Assert.Equal(["FP0002"], result.Remaining.Select(d => d.Id));
+        // `async` and `await` are outside the language subset (FP0019), and Task.Yield outside the .NET subset
+        // (FP0020). No fix can take them out.
+        Assert.Equal(["FP0002", "FP0019", "FP0019", "FP0020"], result.Remaining.Select(d => d.Id));
     }
 
     [Fact]

@@ -8,7 +8,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 
-namespace FunctionalLint.CodeFixes;
+namespace FunctionalLint.Adapters;
 
 /// <summary>
 /// The types whose instances some code in a solution may compare or hash. A class compares by reference and a record
@@ -23,6 +23,7 @@ namespace FunctionalLint.CodeFixes;
 /// <item>A record, struct, tuple or anonymous type holding the type, when that is compared in any of these ways.</item>
 /// </list>
 /// </summary>
+[ImperativeAdapter]
 internal static class EqualityUses
 {
     // Computed once per solution snapshot: heal asks for every class in a project against the same solution.
