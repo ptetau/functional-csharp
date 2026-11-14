@@ -8,7 +8,7 @@ namespace RayTracer.Core;
 public static class SceneParser
 {
     // One parsed line. Each kind is collected with OfType, so no switch over the cases is needed.
-    private abstract record Item(int Line);
+    private closed record Item(int Line);
     private sealed record Blank(int Line) : Item(Line);
     private sealed record Bad(int Line, string Keyword, string Message) : Item(Line);
     private sealed record ImageItem(int Line, ImageSpec Image) : Item(Line);
@@ -24,75 +24,69 @@ public static class SceneParser
 
     // Lines ------------------------------------------------------------------
 
-    private static Item ParseLine(int line, string raw)
-    {
-        var tokens = WithoutComment(raw).Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        return tokens.Length == 0
-            ? new Blank(line)
-            : ParseItem(line, tokens[0], tokens[1..]).Match(item => item, error => new Bad(line, tokens[0], error.Message));
-    }
+    private static Item ParseLine(int line, string raw) =>
+        WithoutComment(raw).Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries) is [var keyword, .. var rest]
+            ? ParseItem(line, keyword, rest).Match(item => item, error => new Bad(line, keyword, error.Message))
+            : new Blank(line);
 
     private static string WithoutComment(string raw) =>
         raw.IndexOf('#') is var hash and >= 0 ? raw[..hash] : raw;
 
-    private static Result<Item> ParseItem(int line, string keyword, string[] a) => keyword switch
+    // Each item's shape is a list pattern, so a token is only read once the line is known to have it.
+    private static Result<Item> ParseItem(int line, string keyword, string[] a) => (keyword, a) switch
     {
-        "image" =>
-            from _ in Arity(a, 3, "image <width> <height> <samples>")
-            from width in Whole(a[0], "width")
-            from height in Whole(a[1], "height")
-            from samples in Whole(a[2], "samples")
+        ("image", [var w, var h, var s]) =>
+            from width in Whole(w, "width")
+            from height in Whole(h, "height")
+            from samples in Whole(s, "samples")
             select (Item)new ImageItem(line, new ImageSpec(width, height, samples)),
-        "camera" =>
-            from _ in Arity(a, 7, "camera <x y z> <look-at x y z> <field of view>")
-            from position in Vector(a, 0, "camera position")
-            from lookAt in Vector(a, 3, "camera look-at point")
-            from fov in Number(a[6], "field of view")
+        ("image", _) => Usage("image <width> <height> <samples>"),
+        ("camera", [var x, var y, var z, var lx, var ly, var lz, var f]) =>
+            from position in Vector(x, y, z, "camera position")
+            from lookAt in Vector(lx, ly, lz, "camera look-at point")
+            from fov in Number(f, "field of view")
             from __ in Check(fov is > 0 and < 180, "field of view must be between 0 and 180 degrees")
             from ___ in Check(position != lookAt, "camera position and look-at point must differ")
             select (Item)new CameraItem(line, new Camera(position, lookAt, fov)),
-        "background" =>
-            from _ in Arity(a, 3, "background <r g b>")
-            from colour in ColourAt(a, 0, "background colour")
+        ("camera", _) => Usage("camera <x y z> <look-at x y z> <field of view>"),
+        ("background", [var r, var g, var b]) =>
+            from colour in ColourOf(r, g, b, "background colour")
             select (Item)new BackgroundItem(line, colour),
-        "light" =>
-            from _ in Arity(a, 6, "light <x y z> <r g b>")
-            from position in Vector(a, 0, "light position")
-            from colour in ColourAt(a, 3, "light colour")
+        ("background", _) => Usage("background <r g b>"),
+        ("light", [var x, var y, var z, var r, var g, var b]) =>
+            from position in Vector(x, y, z, "light position")
+            from colour in ColourOf(r, g, b, "light colour")
             select (Item)new LightItem(line, new Light(position, colour)),
-        "material" => ParseMaterial(line, a),
-        "sphere" =>
-            from _ in Arity(a, 5, "sphere <x y z> <radius> <material>")
-            from centre in Vector(a, 0, "sphere centre")
-            from radius in Number(a[3], "radius")
+        ("light", _) => Usage("light <x y z> <r g b>"),
+        ("material", [var name, "diffuse", var r, var g, var b]) =>
+            from colour in ColourOf(r, g, b, "material colour")
+            select (Item)new MaterialItem(line, new Material(name, colour, 0)),
+        ("material", [_, "diffuse", ..]) => Usage("material <name> diffuse <r g b>"),
+        ("material", [var name, "reflect", var r, var g, var b, var k]) =>
+            from colour in ColourOf(r, g, b, "material colour")
+            from reflectivity in Number(k, "reflectivity")
+            from __ in Check(reflectivity is >= 0 and <= 1, "reflectivity must be between 0 and 1")
+            select (Item)new MaterialItem(line, new Material(name, colour, reflectivity)),
+        ("material", [_, "reflect", ..]) => Usage("material <name> reflect <r g b> <reflectivity>"),
+        ("material", _) => new Error("material", "expected material <name> diffuse <r g b> or material <name> reflect <r g b> <reflectivity>"),
+        ("sphere", [var x, var y, var z, var r, var material]) =>
+            from centre in Vector(x, y, z, "sphere centre")
+            from radius in Number(r, "radius")
             from __ in Check(radius > 0, "radius must be greater than 0")
-            select (Item)new SphereItem(line, centre, radius, a[4]),
-        "plane" =>
-            from _ in Arity(a, 5, "plane <normal x y z> <distance> <material>")
-            from normal in Vector(a, 0, "plane normal")
+            select (Item)new SphereItem(line, centre, radius, material),
+        ("sphere", _) => Usage("sphere <x y z> <radius> <material>"),
+        ("plane", [var x, var y, var z, var d, var material]) =>
+            from normal in Vector(x, y, z, "plane normal")
             from __ in Check(normal.Length > 0, "plane normal must not be zero")
-            from distance in Number(a[3], "distance")
-            select (Item)new PlaneItem(line, normal.Normalised(), distance, a[4]),
+            from distance in Number(d, "distance")
+            select (Item)new PlaneItem(line, normal.Normalised(), distance, material),
+        ("plane", _) => Usage("plane <normal x y z> <distance> <material>"),
         _ => new Error("keyword", $"unknown item '{keyword}'. Expected image, camera, background, light, material, sphere or plane"),
     };
 
-    private static Result<Item> ParseMaterial(int line, string[] a) =>
-        a.Length >= 2 && a[1] == "diffuse"
-            ? from _ in Arity(a, 5, "material <name> diffuse <r g b>")
-              from colour in ColourAt(a, 2, "material colour")
-              select (Item)new MaterialItem(line, new Material(a[0], colour, 0))
-        : a.Length >= 2 && a[1] == "reflect"
-            ? from _ in Arity(a, 6, "material <name> reflect <r g b> <reflectivity>")
-              from colour in ColourAt(a, 2, "material colour")
-              from reflectivity in Number(a[5], "reflectivity")
-              from __ in Check(reflectivity is >= 0 and <= 1, "reflectivity must be between 0 and 1")
-              select (Item)new MaterialItem(line, new Material(a[0], colour, reflectivity))
-            : new Error("material", "expected material <name> diffuse <r g b> or material <name> reflect <r g b> <reflectivity>");
-
     // Tokens -----------------------------------------------------------------
 
-    private static Result<bool> Arity(string[] a, int count, string usage) =>
-        a.Length == count ? true : new Error("arity", $"expected {usage}");
+    private static Result<Item> Usage(string usage) => new Error("arity", $"expected {usage}");
 
     private static Result<bool> Check(bool holds, string message) =>
         holds ? true : new Error("invalid", message);
@@ -107,14 +101,14 @@ public static class SceneParser
             ? value
             : new Error("whole", $"{what} must be a whole number greater than 0, not '{token}'");
 
-    private static Result<Vec3> Vector(string[] a, int at, string what) =>
-        from x in Number(a[at], what)
-        from y in Number(a[at + 1], what)
-        from z in Number(a[at + 2], what)
+    private static Result<Vec3> Vector(string xs, string ys, string zs, string what) =>
+        from x in Number(xs, what)
+        from y in Number(ys, what)
+        from z in Number(zs, what)
         select new Vec3(x, y, z);
 
-    private static Result<Colour> ColourAt(string[] a, int at, string what) =>
-        from v in Vector(a, at, what)
+    private static Result<Colour> ColourOf(string r, string g, string b, string what) =>
+        from v in Vector(r, g, b, what)
         from _ in Check(new[] { v.X, v.Y, v.Z }.All(c => c is >= 0 and <= 1), $"{what} values must be between 0 and 1")
         select new Colour(v.X, v.Y, v.Z);
 

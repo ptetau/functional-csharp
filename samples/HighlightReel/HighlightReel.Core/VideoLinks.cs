@@ -69,8 +69,9 @@ public static class VideoLinks
     private static ImmutableDictionary<string, string> Query(string query) =>
         query
             .Split('&', StringSplitOptions.RemoveEmptyEntries)
-            .Select(pair => pair.Split('=', 2))
-            .Select(parts => (Key: Uri.UnescapeDataString(parts[0]), Value: parts.Length > 1 ? Uri.UnescapeDataString(parts[1].Replace('+', ' ')) : ""))
+            .Select(pair => pair.Split('=', 2) is [var key, var value]
+                ? (Key: Uri.UnescapeDataString(key), Value: Uri.UnescapeDataString(value.Replace('+', ' ')))
+                : (Key: Uri.UnescapeDataString(pair), Value: ""))
             .Aggregate(
                 ImmutableDictionary<string, string>.Empty,
                 (found, pair) => found.ContainsKey(pair.Key) ? found : found.SetItem(pair.Key, pair.Value));

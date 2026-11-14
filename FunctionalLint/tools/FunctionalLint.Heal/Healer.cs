@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Collections.Immutable;
 using FunctionalLint.CodeFixes;
 using Microsoft.CodeAnalysis;
@@ -105,18 +106,25 @@ public static class Healer
     /// </summary>
     public static async Task<ImmutableArray<Diagnostic>> DiagnoseAsync(Project project, CancellationToken ct = default)
     {
+        var clock = Stopwatch.StartNew();
         var compilation = await project.GetCompilationAsync(ct)
             ?? throw new InvalidOperationException($"Couldn't compile {project.Name}.");
-        var compilerErrors = compilation.GetDiagnostics(ct).Where(d => d.Severity == DiagnosticSeverity.Error);
         var analyzers = Analyzers.AddRange(ProjectAnalyzers(project));
 
         // Under a policy, its values replace the project's for the policy keys, and the strict gate checks run.
         var policy = Policy.For(project);
         var options = policy?.Apply(project.AnalyzerOptions) ?? project.AnalyzerOptions;
-        var found = await compilation.WithAnalyzers(analyzers, options).GetAnalyzerDiagnosticsAsync(ct);
+        var withAnalyzers = compilation.WithAnalyzers(analyzers,
+            new CompilationWithAnalyzersOptions(options, onAnalyzerException: null, concurrentAnalysis: true,
+                logAnalyzerExecutionTime: false, reportSuppressedDiagnostics: false));
+        // The compiler's diagnostics come from the same object: it binds the code once for the compiler and the
+        // analyzers. (Asking the compilation first, then the analyzers, binds everything twice.)
+        var found = await withAnalyzers.GetAllDiagnosticsAsync(ct);
+        Timing.Mark($"{project.Name}: compile and analyzers ({analyzers.Length})", clock);
         var gate = policy is null ? [] : Gate.Check(project, compilation, policy, ct).ToList();
+        Timing.Mark($"{project.Name}: gate checks", clock);
         // The gate repeats the build's in-file FP0016 scan (a pragma can't hide it there), so drop repeats.
-        return [.. compilerErrors, .. found.Where(d => IsOurs(d) ? d.Severity != DiagnosticSeverity.Hidden : d.Severity == DiagnosticSeverity.Error)
+        return [.. found.Where(d => IsOurs(d) ? d.Severity != DiagnosticSeverity.Hidden : d.Severity == DiagnosticSeverity.Error)
             .Concat(gate).DistinctBy(d => (d.Id, d.Location.SourceTree?.FilePath, d.Location.SourceSpan, d.GetMessage()))];
     }
 

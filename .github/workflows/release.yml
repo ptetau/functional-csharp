@@ -1,0 +1,95 @@
+name: Release
+
+# Publishes the FunctionalLint NuGet package when a version tag is pushed:
+#
+#   git tag v0.4.0 && git push origin v0.4.0
+#
+# The tag sets the package version. The package is also attached to a GitHub release for the tag.
+#
+# It publishes with nuget.org trusted publishing: no API key is stored. GitHub gives the job a short-lived token,
+# and nuget.org swaps it for an API key that lasts an hour. One-time setup:
+#   1. On nuget.org, under your username, Trusted Publishing, add a policy: repository owner "ptetau",
+#      repository "functional-csharp", workflow file "release.yml", environment "release".
+#   2. In this repository, add a secret NUGET_USER with your nuget.org profile name (not your email).
+# https://learn.microsoft.com/en-us/nuget/nuget-org/trusted-publishing
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write   # to create the GitHub release
+  id-token: write   # to ask GitHub for the token nuget.org trusts
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # The nuget.org policy names this environment, so no other job can publish. Required reviewers can be added
+    # to it in the repository's settings.
+    environment: release
+    env:
+      DOTNET_NOLOGO: "1"
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      FUNCTIONALLINT_NO_SERVER: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Version from the tag
+        id: version
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Tag '$GITHUB_REF_NAME' isn't a version like v1.2.3 or v1.2.3-beta.1."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Check the nuget.org user is set
+        shell: bash
+        env:
+          NUGET_USER: ${{ secrets.NUGET_USER }}
+        run: |
+          if [[ -z "$NUGET_USER" ]]; then
+            echo "::error::Add a repository secret NUGET_USER with your nuget.org profile name, and a trusted publishing policy on nuget.org (see the top of release.yml)."
+            exit 1
+          fi
+
+      # The same checks as CI, so a tag on an unchecked commit can't publish.
+      - name: Linter tests
+        run: dotnet test FunctionalLint
+      - name: Sample app and library tests
+        run: dotnet test samples/Samples.slnx
+      - name: Gate every functional core
+        shell: bash
+        run: |
+          FunctionalLint/heal.sh samples/Samples.slnx --check
+          FunctionalLint/heal.sh FunctionalLint/FunctionalLint.slnx --check
+
+      - name: Pack
+        run: dotnet pack FunctionalLint/src/FunctionalLint.Package -c Release -o artifacts -p:Version=${{ steps.version.outputs.version }}
+
+      # Right before the push: the key it returns lasts an hour.
+      - name: NuGet login (GitHub token for a short-lived API key)
+        uses: NuGet/login@v1
+        id: login
+        with:
+          user: ${{ secrets.NUGET_USER }}
+
+      - name: Publish to nuget.org
+        env:
+          NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
+        run: dotnet nuget push "artifacts/*.nupkg" --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate
+
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" artifacts/*.nupkg --title "FunctionalLint ${{ steps.version.outputs.version }}" --generate-notes

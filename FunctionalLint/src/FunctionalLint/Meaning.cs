@@ -11,7 +11,7 @@ using Microsoft.CodeAnalysis.Operations;
 namespace FunctionalLint;
 
 // Rules about what code means, which syntax alone can't tell: operators that throw (FP0015, with the calls that
-// throw), and the order of hash-based collections (FP0021).
+// throw), the order of hash-based collections (FP0021), and exact floating-point comparison (FP0022).
 public sealed partial class FunctionalAnalyzer
 {
     public static readonly DiagnosticDescriptor HashOrder = Rule("FP0021",
@@ -20,6 +20,40 @@ public sealed partial class FunctionalAnalyzer
         "A hash set or dictionary keeps its items in hash order, which isn't defined: strings are hashed with a seed " +
         "that changes every run. Joining one into a string, copying it to a list, or taking its First makes the output " +
         "change between runs. Sort it first (OrderBy), or keep it in an ImmutableSortedSet or ImmutableSortedDictionary.");
+
+    public static readonly DiagnosticDescriptor ExactFloatComparison = Rule("FP0022",
+        "Floating-point numbers aren't compared exactly",
+        "'{0}' compares floating-point numbers exactly. {1}.",
+        "Rounding makes floating-point results that should be equal differ slightly: 0.1 + 0.2 != 0.3. Comparing two " +
+        "computed values with == or != then depends on the order of the arithmetic. Compare within a tolerance " +
+        "instead, or use decimal for amounts that must be exact. Comparing with a whole-number constant (x == 0, " +
+        "x != 1) is allowed: it tests for a value that was set, not computed, and it's exact. A fraction such as 0.1 " +
+        "isn't exact in binary, so it's reported. NaN never equals anything, so use double.IsNaN.");
+
+    // FP0022: exact floating-point comparison ---------------------------------
+
+    private static void AnalyzeFloatComparison(OperationAnalysisContext ctx)
+    {
+        if (ctx.Operation is not IBinaryOperation { OperatorKind: BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals } op) return;
+        if (!IsFloatingPoint(op.LeftOperand.Type) || !IsFloatingPoint(op.RightOperand.Type)) return;
+
+        var constants = new[] { op.LeftOperand, op.RightOperand }
+            .Select(o => o.ConstantValue)
+            .Where(c => c.HasValue)
+            .Select(c => c.Value is IConvertible v ? v.ToDouble(System.Globalization.CultureInfo.InvariantCulture) : double.NaN)
+            .ToImmutableArray();
+        var advice = constants.Any(double.IsNaN)
+            ? "Use double.IsNaN: NaN never equals anything"
+            : !constants.Any(IsWholeNumber) ? "Use a tolerance: Math.Abs(a - b) < 1e-9" : null;
+        if (advice is null) return;
+        Report(ctx, ExactFloatComparison, op.Syntax, Short(op.Syntax.ToString()), advice);
+    }
+
+    // 0, 1, -3: exact in binary. Rounding a whole number gives it back exactly, so the difference is 0.
+    private static bool IsWholeNumber(double value) => Math.Abs(value - Math.Round(value)) < double.Epsilon;
+
+    private static bool IsFloatingPoint(ITypeSymbol? type) =>
+        type?.SpecialType is SpecialType.System_Single or SpecialType.System_Double || type?.ToDisplayString() == "System.Half";
 
     // FP0015: casts that throw ------------------------------------------------
 
@@ -64,7 +98,7 @@ public sealed partial class FunctionalAnalyzer
     // A non-zero constant, Math.Max or Math.Clamp with a positive floor (`Math.Max(1, n)`), or a local set to one.
     private static bool CannotBeZero(IOperation? op, int depth = 0) => depth < 6 && Unwrapped(op) switch
     {
-        { ConstantValue: { HasValue: true, Value: { } value } } => !IsZero(value),
+        { ConstantValue.HasValue: true } constant => !IsZero(constant),
         IInvocationOperation { TargetMethod: { Name: "Max", ContainingType.Name: "Math" } } max =>
             max.Arguments.Any(a => IsPositiveConstant(a.Value)),
         IInvocationOperation { TargetMethod: { Name: "Clamp", ContainingType.Name: "Math" } } clamp =>
@@ -90,7 +124,8 @@ public sealed partial class FunctionalAnalyzer
         SpecialType.System_Int32 or SpecialType.System_UInt32 or SpecialType.System_Int64 or SpecialType.System_UInt64 or
         SpecialType.System_Decimal or SpecialType.System_Char;
 
-    private static bool IsZero(object value) => value switch
+    // A constant that is 0, whatever its numeric type.
+    private static bool IsZero(IOperation constant) => constant.ConstantValue.Value switch
     {
         decimal d => d == 0m,
         double d => d == 0d,
@@ -104,45 +139,25 @@ public sealed partial class FunctionalAnalyzer
     {
         var text = divisor.Syntax.ToString();
         bool IsDivisor(IOperation o) => Unwrapped(o)?.Syntax.ToString() == text;
-        bool IsZeroConstant(IOperation o) => Unwrapped(o) is { ConstantValue: { HasValue: true, Value: { } v } } && IsZero(v);
+        bool IsZeroConstant(IOperation o) => Unwrapped(o) is { ConstantValue.HasValue: true } constant && IsZero(constant);
 
-        // True if `condition` being `whenTrue` means the divisor isn't 0.
-        bool RulesOutZero(IOperation condition, bool whenTrue) => condition switch
-        {
-            IUnaryOperation { OperatorKind: UnaryOperatorKind.Not } not => RulesOutZero(not.Operand, !whenTrue),
-            IBinaryOperation { OperatorKind: BinaryOperatorKind.ConditionalAnd } both when whenTrue =>
-                RulesOutZero(both.LeftOperand, true) || RulesOutZero(both.RightOperand, true),
-            IBinaryOperation { OperatorKind: BinaryOperatorKind.ConditionalOr } either when !whenTrue =>
-                RulesOutZero(either.LeftOperand, false) || RulesOutZero(either.RightOperand, false),
-            IBinaryOperation b when IsDivisor(b.LeftOperand) && IsZeroConstant(b.RightOperand)
-                                 || IsDivisor(b.RightOperand) && IsZeroConstant(b.LeftOperand) =>
-                b.OperatorKind == BinaryOperatorKind.NotEquals && whenTrue
+        bool Condition(IOperation condition, bool whenTrue) => condition is IBinaryOperation b
+            && (IsDivisor(b.LeftOperand) && IsZeroConstant(b.RightOperand) || IsDivisor(b.RightOperand) && IsZeroConstant(b.LeftOperand))
+            && (b.OperatorKind == BinaryOperatorKind.NotEquals && whenTrue
                 || b.OperatorKind == BinaryOperatorKind.Equals && !whenTrue
                 // `b > 0` (or `0 < b`) rules out 0 when true.
                 || b.OperatorKind == BinaryOperatorKind.GreaterThan && IsDivisor(b.LeftOperand) && whenTrue
-                || b.OperatorKind == BinaryOperatorKind.LessThan && IsDivisor(b.RightOperand) && whenTrue,
-            IIsPatternOperation pattern when IsDivisor(pattern.Value) => pattern.Pattern switch
-            {
-                INegatedPatternOperation { Pattern: IConstantPatternOperation c } when IsZeroConstant(c.Value) => whenTrue,
-                IConstantPatternOperation c when IsZeroConstant(c.Value) => !whenTrue,
-                IRelationalPatternOperation { OperatorKind: BinaryOperatorKind.GreaterThan } r when IsZeroConstant(r.Value) => whenTrue,
-                _ => false,
-            },
+                || b.OperatorKind == BinaryOperatorKind.LessThan && IsDivisor(b.RightOperand) && whenTrue);
+
+        // `b is not 0`, `b is > 0` (a negated pattern arrives here when the `is` is true).
+        bool Pattern(IPatternOperation pattern, ImmutableArray<string> names) => names.Contains(text) && pattern switch
+        {
+            INegatedPatternOperation { Pattern: IConstantPatternOperation c } => IsZeroConstant(c.Value),
+            IRelationalPatternOperation { OperatorKind: BinaryOperatorKind.GreaterThan } r => IsZeroConstant(r.Value),
             _ => false,
         };
 
-        var chain = Sequences.Unfold(op, o => o.Parent);
-        return chain.Zip(chain.Skip(1), (child, parent) => parent switch
-        {
-            IConditionalOperation c when c.WhenTrue == child => RulesOutZero(c.Condition, whenTrue: true),
-            IConditionalOperation c when c.WhenFalse == child => RulesOutZero(c.Condition, whenTrue: false),
-            IBinaryOperation { OperatorKind: BinaryOperatorKind.ConditionalAnd } b when b.RightOperand == child =>
-                RulesOutZero(b.LeftOperand, whenTrue: true),
-            IBinaryOperation { OperatorKind: BinaryOperatorKind.ConditionalOr } b when b.RightOperand == child =>
-                RulesOutZero(b.LeftOperand, whenTrue: false),
-            ISwitchExpressionArmOperation arm when arm.Value == child && arm.Guard is { } guard => RulesOutZero(guard, whenTrue: true),
-            _ => false,
-        }).Any(guarded => guarded);
+        return IsGuarded(op, new Check(Condition, Pattern));
     }
 
     // FP0021: hash order -------------------------------------------------------

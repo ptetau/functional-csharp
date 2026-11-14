@@ -62,7 +62,7 @@ public static class Commands
             .Bind(at => NotPastEnd(reel, video.Id, at))
         from text in Label(label)
         let updated = Reels.AddMilestone(reel, video.Id, seconds, text)
-        select new Outcome(updated, true, $"Added {Describe(updated.Milestones[^1])}\n");
+        select new Outcome(updated, true, $"Added {Describe(video.Id, seconds, text)}\n");
 
     // H-6
     private static Result<Outcome> Duration(Reel reel, ImmutableArray<string> args) =>
@@ -109,17 +109,17 @@ public static class Commands
         args switch
         {
             [var number] =>
-                from n in MilestoneNumber(number, Reels.InListOrder(reel).Length)
-                let milestone = Reels.InListOrder(reel)[n - 1]
-                select new Outcome(Reels.Remove(reel, milestone), true, Invariant($"Removed {n}. {Describe(milestone)}\n")),
+                from picked in MilestoneAt(Reels.InListOrder(reel), number)
+                select new Outcome(Reels.Remove(reel, picked.Milestone), true, Invariant($"Removed {picked.Number}. {Describe(picked.Milestone)}\n")),
             _ => UsageError("usage: highlights remove <n>"),
         };
 
-    private static Result<int> MilestoneNumber(string text, int count) =>
+    // The milestone numbered `text` in the list (1 is the first), with its number.
+    private static Result<(int Number, Milestone Milestone)> MilestoneAt(ValueList<Milestone> list, string text) =>
         int.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out var n)
-            ? n >= 1 && n <= count
-                ? n
-                : new Error("no-milestone", Invariant($"there is no milestone {n} (the reel has {count}; see 'list')"))
+            ? n >= 1 && list.ElementAtOrDefault(n - 1) is { } milestone
+                ? (n, milestone)
+                : new Error("no-milestone", Invariant($"there is no milestone {n} (the reel has {list.Length}; see 'list')"))
             : new Error("usage", $"'{text}' is not a milestone number");
 
     private static Result<string> Label(string label) =>
@@ -146,7 +146,9 @@ public static class Commands
             .FirstOrDefault()
         ?? Result.Ok(length);
 
-    private static string Describe(Milestone m) => $"{m.VideoId}  {Times.Format(m.Seconds)}  {m.Label}";
+    private static string Describe(Milestone m) => Describe(m.VideoId, m.Seconds, m.Label);
+
+    private static string Describe(string videoId, int seconds, string label) => $"{videoId}  {Times.Format(seconds)}  {label}";
 
     private static Outcome Unchanged(Reel reel, string output) => new(reel, false, output);
 

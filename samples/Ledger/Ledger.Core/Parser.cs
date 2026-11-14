@@ -54,12 +54,12 @@ public static class Parser
     private static bool IsBlankOrComment(string line) =>
         string.IsNullOrWhiteSpace(line) || line.TrimStart().StartsWith(';');
 
-    private static bool IsIndented(string line) => char.IsWhiteSpace(line[0]);
+    private static bool IsIndented(string line) => line is [var first, ..] && char.IsWhiteSpace(first);
 
     private static string[] Words(string text) => text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
 
     private static Parsed ParseBlock(Block block) =>
-        Words(block.Head.Text)[0] == "open" ? ParseOpening(block) : ParseTransaction(block);
+        Words(block.Head.Text) is ["open", ..] ? ParseOpening(block) : ParseTransaction(block);
 
     private static Parsed ParseOpening(Block block)
     {
@@ -86,14 +86,12 @@ public static class Parser
             transaction.ErrorsOrEmpty);
     }
 
-    private static Result<(DateOnly Date, string Description)> ParseHeader(string text)
-    {
-        var words = Words(text);
-        var description = text.Trim()[words[0].Length..].Trim();
-        return Text.ParseDate(words[0]).Bind(date => description.Length > 0
-            ? Result.Ok((date, description))
-            : Result.Fail<(DateOnly, string)>("description", $"transaction on {Text.FormatDate(date)} has no description"));
-    }
+    private static Result<(DateOnly Date, string Description)> ParseHeader(string text) =>
+        Words(text) is [var first, ..]
+            ? Text.ParseDate(first).Bind(date => text.Trim()[first.Length..].Trim() is { Length: > 0 } description
+                ? Result.Ok((date, description))
+                : Result.Fail<(DateOnly, string)>("description", $"transaction on {Text.FormatDate(date)} has no description"))
+            : Result.Fail<(DateOnly, string)>("header", "expected '<date> <description>'");
 
     /// <summary>`account` or `account  amount`.</summary>
     private static Result<Posting> ParsePosting(SourceLine line)

@@ -44,4 +44,66 @@ public class FP0015_ThrowingOperators
             public static int Clamped(int a, int count) => a / System.Math.Clamp(count, 1, 10);
         }
         """);
+
+    [Fact]
+    public Task Indexing_that_may_be_out_of_range_is_flagged() => Verify("""
+        using System.Collections.Generic;
+        using System.Collections.Immutable;
+        using System.Linq;
+
+        public static class C
+        {
+            public static int First(int[] xs) => {|FP0015:xs[0]|};
+            public static int Last(IReadOnlyList<int> xs) => {|FP0015:xs[^1]|};
+            public static int At(ImmutableArray<int> xs, int i) => {|FP0015:xs[i]|};
+            public static char Letter(string s) => {|FP0015:s[0]|};
+            public static int Short(int[] xs) => xs.Length > 0 ? {|FP0015:xs[1]|} : 0;
+            public static int Other(int[] xs, int[] ys) => ys.Length > 0 ? {|FP0015:xs[0]|} : 0;
+        }
+        """);
+
+    [Fact]
+    public Task Indexing_after_a_check_is_not_flagged() => Verify("""
+        using System.Collections.Generic;
+        using System.Collections.Immutable;
+        using System.Linq;
+
+        public sealed record Box(ImmutableArray<int> {|FP0014:Items|});
+
+        public static class C
+        {
+            public static int Checked(int[] xs, int i) => i < xs.Length ? xs[i] : 0;
+            public static int Mirrored(int[] xs, int i) => xs.Length > i ? xs[i] : 0;
+            public static int Second(int[] xs) => xs.Length > 1 ? xs[1] : 0;
+            public static int Count(IReadOnlyList<int> xs) => xs.Count >= 2 ? xs[1] : 0;
+            public static int Or(ImmutableArray<int> xs) => xs.Length == 0 || xs[0] > 3 ? 0 : 1;
+            public static int Any(int[] xs) => xs.Any() ? xs[0] : 0;
+            public static int Empty(ImmutableArray<int> xs) => xs.IsEmpty ? 0 : xs[^1];
+            public static int List(int[] xs) => xs is [_, _, ..] ? xs[1] : 0;
+            public static int Property(Box box) => box is { Items.Length: > 0 } b ? b.Items[0] : 0;
+            public static int Arm(Box box) => box switch { { Items: [_, ..] } => box.Items[0], _ => 0 };
+            public static int Early(int[] xs)
+            {
+                if (xs.Length < 3) return 0;
+                return xs[2];
+            }
+            public static string Split(string s) => s.Split(',')[0];
+            public static int Ranged(int[] xs) => Enumerable.Range(0, xs.Length).Sum(i => xs[i]);
+            public static int Indexed(int[] xs) => xs.Select((x, i) => x + xs[i]).Sum();
+            public static int[] Slice(int[] xs) => xs[1..];
+        }
+        """);
+
+    [Fact]
+    public Task Default_immutable_arrays_are_flagged() => Verify("""
+        using System.Collections.Immutable;
+
+        public static class C
+        {
+            public static ImmutableArray<int> Default() => {|FP0015:default(ImmutableArray<int>)|};
+            public static ImmutableArray<int> New() => {|FP0015:new ImmutableArray<int>()|};
+            public static ImmutableArray<int> Empty() => ImmutableArray<int>.Empty;
+            public static ImmutableArray<int> Literal() => [];
+        }
+        """);
 }

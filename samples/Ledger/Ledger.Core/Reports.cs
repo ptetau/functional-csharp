@@ -30,7 +30,7 @@ public static class Reports
         var width = rows.Select(r => r.Amount.Length).Append(total.Length).Aggregate(BalanceAmountWidth, Math.Max);
 
         var lines = rows
-            .Select(r => $"{r.Amount.PadLeft(width)}  {Indent(r.Path)}{Accounts.Segments(r.Path)[^1]}")
+            .Select(r => $"{r.Amount.PadLeft(width)}  {Indent(r.Path)}{r.Path.Split(':')[^1]}")
             .Append(new string('-', width + 2))
             .Append(total.PadLeft(width));
 

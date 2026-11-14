@@ -28,7 +28,7 @@ public sealed class MutableStateFix : CodeFixProvider
     {
         var found = await Documents.TokenAt(context.Document, context.Span, context.CancellationToken).ConfigureAwait(false);
         if (found is not var (root, token)) return;
-        var diagnostic = context.Diagnostics[0];
+        if (context.Diagnostics is not [var diagnostic, ..]) return;
         var document = context.Document;
         var model = await document.GetSemanticModelAsync(context.CancellationToken).ConfigureAwait(false);
 
@@ -98,7 +98,7 @@ public sealed class MutableStateFix : CodeFixProvider
         IPointerTypeSymbol or IFunctionPointerTypeSymbol => true,
         { TypeKind: TypeKind.Enum } => true,
         { SpecialType: not SpecialType.None } => true,
-        INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } nullable => CopiesSafely(nullable.TypeArguments[0]),
+        INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T, TypeArguments: [var inner] } => CopiesSafely(inner),
         INamedTypeSymbol { IsTupleType: true } tuple => tuple.TupleElements.All(e => CopiesSafely(e.Type)),
         INamedTypeSymbol { IsReadOnly: true } => true,
         INamedTypeSymbol named => named.Locations.Any(l => l.IsInSource)

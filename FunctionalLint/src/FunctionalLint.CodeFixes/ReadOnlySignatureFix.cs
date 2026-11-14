@@ -40,7 +40,7 @@ public sealed class ReadOnlySignatureFix : CodeFixProvider
     {
         var found = await Documents.TokenAt(context.Document, context.Span, context.CancellationToken).ConfigureAwait(false);
         if (found is not var (root, token)) return;
-        var diagnostic = context.Diagnostics[0];
+        if (context.Diagnostics is not [var diagnostic, ..]) return;
 
         // FP0005 is only fixable when it points at a local's declared type, not at `new List<int>()`.
         var typeSyntax = diagnostic.Id == FunctionalAnalyzer.NoMutableTypes.Id
@@ -103,7 +103,7 @@ public sealed class ReadOnlySignatureFix : CodeFixProvider
             TypeArgumentListSyntax { Parent: GenericNameSyntax generic } arguments =>
                 model.GetSymbolInfo(generic).Symbol is INamedTypeSymbol type
                 && node is TypeSyntax argument && arguments.Arguments.IndexOf(argument) is var index && index >= 0
-                && (type.OriginalDefinition.TypeParameters[index].Variance == VarianceKind.Out || IsAsyncResult(generic, type, outermost))
+                && (type.OriginalDefinition.TypeParameters.ElementAtOrDefault(index)?.Variance == VarianceKind.Out || IsAsyncResult(generic, type, outermost))
                 && OnlyInCovariantPositions(model, generic, outermost),
             _ => false,
         };

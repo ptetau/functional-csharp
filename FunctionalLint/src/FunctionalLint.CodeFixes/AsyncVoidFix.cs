@@ -27,6 +27,7 @@ public sealed class AsyncVoidFix : CodeFixProvider
 
     public override async Task RegisterCodeFixesAsync(CodeFixContext context)
     {
+        if (context.Diagnostics is not [var diagnostic, ..]) return;
         var found = await Documents.TokenAt(context.Document, context.Span, context.CancellationToken).ConfigureAwait(false);
         if (found is not var (root, token)) return;
 
@@ -55,7 +56,7 @@ public sealed class AsyncVoidFix : CodeFixProvider
                 : replaced;
 
             return Task.FromResult(context.Document.WithSyntaxRoot(newRoot));
-        }, equivalenceKey: "FP0010"), context.Diagnostics[0]);
+        }, equivalenceKey: "FP0010"), diagnostic);
     }
 
     private static bool ImplementsInterface(IMethodSymbol method) =>
