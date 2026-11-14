@@ -189,10 +189,15 @@ public sealed record Policy(
 
     private sealed class OverridingProvider(AnalyzerConfigOptionsProvider inner, Policy policy) : AnalyzerConfigOptionsProvider
     {
+        // Analyzers ask for a file's options on nearly every callback, and files share option sets, so each set is
+        // wrapped once. (Wrapping on every call made the gate twice as slow on a large project.)
+        private readonly System.Runtime.CompilerServices.ConditionalWeakTable<AnalyzerConfigOptions, OverridingOptions> wrapped = new();
+
         public override AnalyzerConfigOptions GlobalOptions => Wrap(inner.GlobalOptions);
         public override AnalyzerConfigOptions GetOptions(SyntaxTree tree) => Wrap(inner.GetOptions(tree));
         public override AnalyzerConfigOptions GetOptions(AdditionalText textFile) => Wrap(inner.GetOptions(textFile));
-        private OverridingOptions Wrap(AnalyzerConfigOptions options) => new(options, policy.Overrides(options));
+        private OverridingOptions Wrap(AnalyzerConfigOptions options) =>
+            wrapped.GetValue(options, o => new OverridingOptions(o, policy.Overrides(o)));
     }
 
     private sealed class OverridingOptions(AnalyzerConfigOptions inner, ImmutableDictionary<string, string> overrides) : AnalyzerConfigOptions

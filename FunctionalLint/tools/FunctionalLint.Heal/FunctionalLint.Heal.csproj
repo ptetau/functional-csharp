@@ -8,6 +8,11 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <IsPackable>false</IsPackable>
+    <!-- Measured with tools/scale-test.sh (docs/performance.md): a check is a short burst of heavy work on every core,
+         so profile-guided tiering only adds rejits, and the server GC keeps up with the allocation. Together they
+         take a 61,000-line core from 28 s to 16 s, and a small one from 4.9 s to 4.2 s. -->
+    <TieredPGO>false</TieredPGO>
+    <ServerGarbageCollection>true</ServerGarbageCollection>
   </PropertyGroup>
 
   <ItemGroup>

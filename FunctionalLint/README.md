@@ -237,6 +237,7 @@ Two pieces help a coding agent work in the functional subset.
 - `heal.sh --server-status` says whether it's running.
 - [`agents/hook-smoke-test.sh`](agents/hook-smoke-test.sh) `<a .cs file in a clean core project>` runs the hook and the server end to end: a clean edit, an edit with a loop (rejected), then its rewrite. CI runs it on Linux, macOS and Windows.
 - The first run of all also builds the heal tool, which takes longer.
+- A check compiles the whole project, so it grows with the project: about 10 s warm for a 61,000-line core. See [docs/performance.md](docs/performance.md) for measurements, and split a core that big into several projects.
 
 **Check before finishing.** [`agents/claude-code-stop-hook.sh`](agents/claude-code-stop-hook.sh) is a Claude Code Stop hook, also in `agents/claude-settings.json`. When Claude is about to finish, it checks every functional core with a changed file (by `git status`), whatever changed it. That includes files written by a shell command, which the edit hook never sees. Problems stop Claude once, with the report (exit 2). If Claude stops again with problems left, you see them instead (exit 1), so an agent that can't fix something doesn't loop. Verified in a live session: Claude wrote a loop with `cat`, the Stop hook blocked it with FP0001, and Claude rewrote it with `Sum()`.
 

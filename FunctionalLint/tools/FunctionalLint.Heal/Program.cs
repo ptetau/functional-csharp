@@ -114,6 +114,7 @@ async Task<(int Code, string Report)> CheckHereAsync(string target, string? focu
 {
     var clock = Stopwatch.StartNew();
     var loaded = await Checker.LoadWithDependentsAsync(target);
+    Timing.Mark("load", Stopwatch.StartNew(), clock.Elapsed);
     using (loaded.Workspace)
         return await Checker.CheckAsync(loaded.Workspace.CurrentSolution, loaded.Functional, focus, cwd, clock);
 }
