@@ -92,7 +92,7 @@ Or publish a release: push a tag such as `v0.4.0` and [`.github/workflows/releas
 Push it to your feed, then reference it from each functional core project:
 
 ```xml
-<PackageReference Include="FunctionalLint" Version="0.3.0" PrivateAssets="all" />
+<PackageReference Include="FunctionalLint" Version="0.4.0" PrivateAssets="all" />
 ```
 
 The package carries the analyzer, the code fixes and the same compiler settings as the props file. It doesn't include `functional.globalconfig`; put your `functional_lint.*` settings in your own `.globalconfig` or `.editorconfig`.
