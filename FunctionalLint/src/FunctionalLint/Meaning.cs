@@ -11,7 +11,7 @@ using Microsoft.CodeAnalysis.Operations;
 namespace FunctionalLint;
 
 // Rules about what code means, which syntax alone can't tell: operators that throw (FP0015, with the calls that
-// throw), and the order of hash-based collections (FP0021).
+// throw), the order of hash-based collections (FP0021), and exact floating-point comparison (FP0022).
 public sealed partial class FunctionalAnalyzer
 {
     public static readonly DiagnosticDescriptor HashOrder = Rule("FP0021",
@@ -20,6 +20,32 @@ public sealed partial class FunctionalAnalyzer
         "A hash set or dictionary keeps its items in hash order, which isn't defined: strings are hashed with a seed " +
         "that changes every run. Joining one into a string, copying it to a list, or taking its First makes the output " +
         "change between runs. Sort it first (OrderBy), or keep it in an ImmutableSortedSet or ImmutableSortedDictionary.");
+
+    public static readonly DiagnosticDescriptor ExactFloatComparison = Rule("FP0022",
+        "Floating-point numbers aren't compared exactly",
+        "'{0}' compares floating-point numbers exactly. {1}.",
+        "Rounding makes floating-point results that should be equal differ slightly: 0.1 + 0.2 != 0.3. Comparing two " +
+        "computed values with == or != then depends on the order of the arithmetic. Compare within a tolerance " +
+        "instead, or use decimal for amounts that must be exact. Comparing with a constant (x == 0, x != 1) is " +
+        "allowed: it tests for a value that was set, not computed. NaN never equals anything, so use double.IsNaN.");
+
+    // FP0022: exact floating-point comparison ---------------------------------
+
+    private static void AnalyzeFloatComparison(OperationAnalysisContext ctx)
+    {
+        if (ctx.Operation is not IBinaryOperation { OperatorKind: BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals } op) return;
+        if (!IsFloatingPoint(op.LeftOperand.Type) || !IsFloatingPoint(op.RightOperand.Type)) return;
+
+        var constants = new[] { op.LeftOperand, op.RightOperand }.Select(o => o.ConstantValue).Where(c => c.HasValue).ToImmutableArray();
+        var advice = constants.Any(c => c.Value is double.NaN or float.NaN)
+            ? "Use double.IsNaN: NaN never equals anything"
+            : constants.IsEmpty ? "Use a tolerance: Math.Abs(a - b) < 1e-9" : null;
+        if (advice is null) return;
+        Report(ctx, ExactFloatComparison, op.Syntax, Short(op.Syntax.ToString()), advice);
+    }
+
+    private static bool IsFloatingPoint(ITypeSymbol? type) =>
+        type?.SpecialType is SpecialType.System_Single or SpecialType.System_Double || type?.ToDisplayString() == "System.Half";
 
     // FP0015: casts that throw ------------------------------------------------
 
@@ -64,7 +90,7 @@ public sealed partial class FunctionalAnalyzer
     // A non-zero constant, Math.Max or Math.Clamp with a positive floor (`Math.Max(1, n)`), or a local set to one.
     private static bool CannotBeZero(IOperation? op, int depth = 0) => depth < 6 && Unwrapped(op) switch
     {
-        { ConstantValue: { HasValue: true, Value: { } value } } => !IsZero(value),
+        { ConstantValue.HasValue: true } constant => !IsZero(constant),
         IInvocationOperation { TargetMethod: { Name: "Max", ContainingType.Name: "Math" } } max =>
             max.Arguments.Any(a => IsPositiveConstant(a.Value)),
         IInvocationOperation { TargetMethod: { Name: "Clamp", ContainingType.Name: "Math" } } clamp =>
@@ -90,7 +116,8 @@ public sealed partial class FunctionalAnalyzer
         SpecialType.System_Int32 or SpecialType.System_UInt32 or SpecialType.System_Int64 or SpecialType.System_UInt64 or
         SpecialType.System_Decimal or SpecialType.System_Char;
 
-    private static bool IsZero(object value) => value switch
+    // A constant that is 0, whatever its numeric type.
+    private static bool IsZero(IOperation constant) => constant.ConstantValue.Value switch
     {
         decimal d => d == 0m,
         double d => d == 0d,
@@ -104,7 +131,7 @@ public sealed partial class FunctionalAnalyzer
     {
         var text = divisor.Syntax.ToString();
         bool IsDivisor(IOperation o) => Unwrapped(o)?.Syntax.ToString() == text;
-        bool IsZeroConstant(IOperation o) => Unwrapped(o) is { ConstantValue: { HasValue: true, Value: { } v } } && IsZero(v);
+        bool IsZeroConstant(IOperation o) => Unwrapped(o) is { ConstantValue.HasValue: true } constant && IsZero(constant);
 
         bool Condition(IOperation condition, bool whenTrue) => condition is IBinaryOperation b
             && (IsDivisor(b.LeftOperand) && IsZeroConstant(b.RightOperand) || IsDivisor(b.RightOperand) && IsZeroConstant(b.LeftOperand))

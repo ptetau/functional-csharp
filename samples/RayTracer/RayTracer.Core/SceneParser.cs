@@ -8,7 +8,7 @@ namespace RayTracer.Core;
 public static class SceneParser
 {
     // One parsed line. Each kind is collected with OfType, so no switch over the cases is needed.
-    private abstract record Item(int Line);
+    private closed record Item(int Line);
     private sealed record Blank(int Line) : Item(Line);
     private sealed record Bad(int Line, string Keyword, string Message) : Item(Line);
     private sealed record ImageItem(int Line, ImageSpec Image) : Item(Line);

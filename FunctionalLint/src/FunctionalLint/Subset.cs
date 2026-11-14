@@ -19,7 +19,8 @@ public sealed partial class FunctionalAnalyzer
         "'{0}' is outside the subset: {1}. {2}.",
         "A core is written in a subset of C#: the kinds of syntax listed in Subset.cs. Everything else is reported, " +
         "including features a future C# adds, until someone reviews them. That rules out raw memory, locks, try/catch, " +
-        "using, events, ref and out, async, checked, the ! operator and dynamic. A policy can allow more " +
+        "using, events, ref and out, async, checked, the ! operator, dynamic and object, virtual and abstract members, " +
+        "and deriving from a record that isn't closed. A policy can allow more " +
         "(functional_lint.allowed_syntax).");
 
     public const string AllowedSyntaxKey = "functional_lint.allowed_syntax";
@@ -220,6 +221,40 @@ public sealed partial class FunctionalAnalyzer
                     Instead: "Return a tuple, an Option or a Result", At: t.GetLocation())))
             .Where(p => !Allows(p.Feature) && !IsRequiredByContract(model, p.Node, p.Feature, ct));
 
+        // `virtual` and `abstract` members send a call to code a subtype picks, out of sight. An abstract type is open:
+        // anyone can add a subtype. A closed record says the same thing and the compiler checks every switch over it.
+        // Interfaces are contracts, so their static abstract members (generic math) are left alone.
+        var dispatch = root.DescendantNodes().OfType<MemberDeclarationSyntax>()
+            .Where(member => member.Parent is not InterfaceDeclarationSyntax)
+            .SelectMany(member => member.Modifiers
+                .Where(t => t.IsKind(SyntaxKind.VirtualKeyword) || t.IsKind(SyntaxKind.AbstractKeyword))
+                .Select(t => member is BaseTypeDeclarationSyntax type
+                    ? type.Modifiers.Any(m => m.Text == "closed")
+                        ? default
+                        : (Node: (SyntaxNode)member, Feature: t.Text, Why: "anyone can add a subtype, so a switch over it can't be checked",
+                            Instead: "Mark it 'closed' instead", At: t.GetLocation())
+                    : (Node: (SyntaxNode)member, Feature: t.Text, Why: "a subtype picks what runs, unseen",
+                        Instead: "Use a switch on closed cases, or a function", At: t.GetLocation())))
+            .Where(d => d.Node is not null && !Allows(d.Feature));
+
+        // A record may derive only from a closed record: then every switch over the base is checked for each case.
+        var inheritance = root.DescendantNodes().OfType<RecordDeclarationSyntax>()
+            .Where(record => record.BaseList is not null)
+            .Select(record => (Record: record, Base: model.GetDeclaredSymbol(record, ct)?.BaseType))
+            .Where(r => r.Base is { IsRecord: true } b && !IsClosed(b))
+            .Select(r => (Node: (SyntaxNode)r.Record, Feature: "inheritance",
+                Why: $"'{r.Base?.Name}' isn't closed, so a switch over it can't be checked",
+                Instead: $"Mark '{r.Base?.Name}' closed", At: r.Record.BaseList?.Types.FirstOrDefault()?.Type.GetLocation() ?? r.Record.Identifier.GetLocation()))
+            .Where(i => !Allows(i.Feature));
+
+        // `object` hides the type, so using the value means a cast or a type test. Overrides and interface
+        // implementations keep it in their signature (Equals(object? obj)): that's someone else's.
+        var objects = root.DescendantNodes().OfType<PredefinedTypeSyntax>()
+            .Where(type => type.Keyword.IsKind(SyntaxKind.ObjectKeyword))
+            .Select(type => (Node: (SyntaxNode)type, Feature: "object", Why: "it hides the type",
+                Instead: "Use the real type, a type parameter, or a closed record", At: type.GetLocation()))
+            .Where(o => !Allows(o.Feature) && !IsRequiredByContract(model, o.Node, o.Feature, ct));
+
         // `dynamic` turns off type checking. It's a type name, so only the semantic model can tell.
         var dynamics = root.DescendantNodes().OfType<IdentifierNameSyntax>()
             .Where(name => name.Identifier.ValueText == "dynamic"
@@ -229,6 +264,7 @@ public sealed partial class FunctionalAnalyzer
             .Where(d => !Allows(d.Feature));
 
         return kinds.Concat(modifiers).Concat(usingDeclarations).Concat(parameters).Concat(dynamics)
+            .Concat(dispatch).Concat(inheritance).Concat(objects)
             .Where(f => !skip(f.Node))
             .Select(f => Diagnostic.Create(OutsideSubset, f.At, f.Feature, f.Why, f.Instead));
     }
@@ -252,7 +288,9 @@ public sealed partial class FunctionalAnalyzer
     // plugs into decides (a Roslyn code fix's RegisterCodeFixesAsync, IReadOnlyDictionary.TryGetValue).
     private static bool IsRequiredByContract(SemanticModel model, SyntaxNode node, string feature, System.Threading.CancellationToken ct)
     {
-        if (feature is not ("async" or "out" or "ref")) return false;
+        if (feature is not ("async" or "out" or "ref" or "object")) return false;
+        // Only a signature is someone else's: `object` in the body is the member's own choice.
+        if (feature == "object" && node.Ancestors().Any(a => a is BlockSyntax or ArrowExpressionClauseSyntax)) return false;
         var member = node.AncestorsAndSelf().OfType<BaseMethodDeclarationSyntax>().FirstOrDefault() as SyntaxNode
             ?? node.AncestorsAndSelf().OfType<BasePropertyDeclarationSyntax>().FirstOrDefault();
         if (member is null || model.GetDeclaredSymbol(member, ct) is not { } symbol) return false;

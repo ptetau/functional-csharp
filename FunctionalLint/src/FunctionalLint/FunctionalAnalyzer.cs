@@ -169,7 +169,7 @@ public sealed partial class FunctionalAnalyzer : DiagnosticAnalyzer
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics { get; } = ImmutableArray.Create(
         NoLoops, NoMutation, NoMutableState, NoObjects, NoMutableTypes, NoDirectImperative,
         NoThrow, MutableSignature, AdapterLeak, AsyncVoid, ImpureApi, IgnoredResult, ExhaustiveSwitch,
-        ReferenceEqualityInRecord, ThrowingCall, RuleSwitchedOff, AdapterPlacement, ReferenceOutsidePolicy, OutsideSubset, OutsideApiSubset, HashOrder);
+        ReferenceEqualityInRecord, ThrowingCall, RuleSwitchedOff, AdapterPlacement, ReferenceOutsidePolicy, OutsideSubset, OutsideApiSubset, HashOrder, ExactFloatComparison);
 
     // Configuration -----------------------------------------------------------
 
@@ -344,6 +344,7 @@ public sealed partial class FunctionalAnalyzer : DiagnosticAnalyzer
             start.RegisterOperationAction(GuardOp(AnalyzeDefaultImmutableArray), OperationKind.DefaultValue, OperationKind.ObjectCreation);
             start.RegisterOperationAction(GuardOp(AnalyzeDivision), OperationKind.Binary);
             start.RegisterOperationAction(GuardOp(AnalyzeHashOrder), OperationKind.Invocation);
+            start.RegisterOperationAction(GuardOp(AnalyzeFloatComparison), OperationKind.Binary);
             start.RegisterOperationAction(GuardOp(AnalyzeHashOrderedSpread), OperationKind.CollectionExpression);
             var valueTypes = new Lazy<(string? List, string? Map)>(() => FindValueEqualityTypes(start.Compilation));
             start.RegisterSymbolAction(GuardSymbol(ctx => AnalyzeRecordEquality(ctx, valueTypes)), SymbolKind.NamedType);
@@ -1723,6 +1724,6 @@ public sealed partial class FunctionalAnalyzer : DiagnosticAnalyzer
 
     private static string Display(ITypeSymbol type) => type.ToDisplayString(TypeFormat);
 
-    private static void Report(OperationAnalysisContext ctx, DiagnosticDescriptor rule, SyntaxNode node, params object[] args) =>
+    private static void Report(OperationAnalysisContext ctx, DiagnosticDescriptor rule, SyntaxNode node, params string[] args) =>
         ctx.ReportDiagnostic(Diagnostic.Create(rule, node.GetLocation(), args));
 }

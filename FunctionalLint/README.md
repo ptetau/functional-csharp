@@ -24,9 +24,10 @@ A Roslyn analyzer that keeps a C# project functional. It reports errors at build
 | [FP0016](docs/rules/FP0016.md) | `#pragma warning disable`, `[SuppressMessage]`, `#nullable disable`; with a policy, also lowered rules and compiler checks, nullable or analyzers off, code marked generated, a second policy file, a core that stopped loading FunctionalLint | Fix what the rule reports | |
 | [FP0017](docs/rules/FP0017.md) | With a policy: `[ImperativeAdapter]` outside the policy's adapter namespaces | Pass the value in, or move the adapter | |
 | [FP0018](docs/rules/FP0018.md) | With a policy: using a library beyond the .NET base library and the policy's list | Move that code to a shell project | |
-| [FP0019](docs/rules/FP0019.md) | Any syntax outside the subset in `Subset.cs`: `lock`, `try`, `using`, events, `unsafe`, `ref`/`out`, `async`, `checked`, `!`, `dynamic`... and anything a future C# adds | The subset's features: records, expressions, patterns, LINQ | |
+| [FP0019](docs/rules/FP0019.md) | Any syntax outside the subset in `Subset.cs`: `lock`, `try`, `using`, events, `unsafe`, `ref`/`out`, `async`, `checked`, `!`, `dynamic`, `object`, `virtual`/`abstract`, deriving from a record that isn't `closed`... and anything a future C# adds | The subset's features: records, expressions, patterns, LINQ | |
 | [FP0020](docs/rules/FP0020.md) | Any part of .NET outside the subset in `ApiSubset.cs`: threads, `GC`, interop, reflection, hash codes, enumerators... | LINQ, immutable collections, strings, numbers, dates; the rest in a shell project | |
 | [FP0021](docs/rules/FP0021.md) | Showing a hash set's or dictionary's order: `string.Join(", ", set)`, `set.ToImmutableArray()`, `set.First()` | `Order()` / `OrderBy(...)` first, or a sorted collection | |
+| [FP0022](docs/rules/FP0022.md) | Comparing computed floating-point numbers with `==` or `!=`, and `x == double.NaN` | A tolerance: `Math.Abs(a - b) < 1e-9`; `decimal` for exact amounts; `double.IsNaN` | |
 
 Each rule's page has a before/after example. The build output links to it.
 

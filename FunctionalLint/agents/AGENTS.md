@@ -34,9 +34,12 @@ In hot paths (a ray per pixel, a row per file):
   every case, never `_`, so adding a case is a compile error until every switch handles it.
 - No `throw`: return a `Result`. No clock, random, I/O, console or current culture: take the value as a parameter.
 - Stay inside the subset (FP0019, FP0020): no `try`/`catch`, `using`, `lock`, events, `async`/`await`, `out`/`ref`
-  parameters, `checked`, `dynamic` or the `!` operator. From .NET use LINQ, immutable collections, strings, numbers,
+  parameters, `checked`, `dynamic`, `object`, `virtual`/`abstract`, or the `!` operator. Derive only from a `closed`
+  record. From .NET use LINQ, immutable collections, strings, numbers,
   dates, regex and JSON; not threads, reflection, `GetHashCode` or enumerators.
 - Use patterns, not casts that can fail: `shape is Circle c`, not `(Circle)shape`. Check for 0 before integer division.
+- Read list items with a list pattern (`parts is [var key, var value]`), not `parts[0]`, unless a length check is
+  right there. Compare computed doubles within a tolerance, never with `==`.
 - Never show a hash set's or dictionary's order: `string.Join(", ", tags.Order())`, not `string.Join(", ", tags)`.
 - Anything imperative (legacy code, I/O, exceptions) goes in a shell project (the host, CLI or web app), or in an
   `[ImperativeAdapter]` in a namespace `functionallint.policy` allows (FP0017).
