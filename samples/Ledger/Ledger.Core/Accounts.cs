@@ -16,9 +16,11 @@ public static class Accounts
         var emptySegment = segments.Any(string.IsNullOrWhiteSpace)
             ? [$"account '{account}' has an empty part"]
             : ImmutableArray<string>.Empty;
-        var badType = Types.Contains(segments[0])
+        // Split always gives at least one part.
+        var type = account.Split(':')[0];
+        var badType = Types.Contains(type)
             ? ImmutableArray<string>.Empty
-            : [$"account '{account}' has unknown type '{segments[0]}' (expected {string.Join(", ", Types)})"];
+            : [$"account '{account}' has unknown type '{type}' (expected {string.Join(", ", Types)})"];
         return emptySegment.AddRange(badType);
     }
 

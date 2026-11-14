@@ -26,7 +26,7 @@ public sealed class NewLineFix : CodeFixProvider
 
     public override async Task RegisterCodeFixesAsync(CodeFixContext context)
     {
-        var diagnostic = context.Diagnostics[0];
+        if (context.Diagnostics is not [var diagnostic, ..]) return;
         var addProperty = diagnostic.Properties.TryGetValue(FunctionalAnalyzer.AddNewLineKey, out var name) ? name : null;
         var addArgument = diagnostic.Properties.ContainsKey(FunctionalAnalyzer.AddArgumentKey);
         if (addProperty is null && !addArgument) return;
@@ -81,7 +81,7 @@ public sealed class NewLineFix : CodeFixProvider
         // `indent` is last with no comma: move its trailing trivia (a space or line break) after the new item.
         var lineBreak = indent.GetTrailingTrivia().Where(t => t.IsKind(SyntaxKind.EndOfLineTrivia)).Take(1);
         var comma = SyntaxFactory.Token(SyntaxKind.CommaToken).WithTrailingTrivia(
-            separators.Length > 0 ? separators[separators.Length - 1].TrailingTrivia
+            separators is [.., var lastSeparator] ? lastSeparator.TrailingTrivia
             : lineBreak.Any() ? SyntaxFactory.TriviaList(lineBreak) : SyntaxFactory.TriviaList(SyntaxFactory.Space));
         return initializer.WithExpressions(SyntaxFactory.SeparatedList(
             nodes.SetItem(at, indent.WithoutTrailingTrivia()).Insert(at + 1, newLine.WithTrailingTrivia(indent.GetTrailingTrivia())),

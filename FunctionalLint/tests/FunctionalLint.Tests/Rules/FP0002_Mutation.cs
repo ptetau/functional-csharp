@@ -55,7 +55,7 @@ public class FP0002_Mutation
         {
             static void M(int[] xs, System.Text.StringBuilder {|FP0008:sb|})
             {
-                ref int first = ref xs[0];
+                ref int first = ref {|FP0015:xs[0]|};
                 {|FP0002:first = 2|};
                 {|FP0002:sb.Capacity = 10|};
             }

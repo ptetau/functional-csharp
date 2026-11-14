@@ -19,6 +19,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="..\FunctionalLint\Index.cs" Link="Index.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\FunctionalLint\FunctionalLint.csproj" />
   </ItemGroup>
 

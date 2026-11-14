@@ -106,43 +106,23 @@ public sealed partial class FunctionalAnalyzer
         bool IsDivisor(IOperation o) => Unwrapped(o)?.Syntax.ToString() == text;
         bool IsZeroConstant(IOperation o) => Unwrapped(o) is { ConstantValue: { HasValue: true, Value: { } v } } && IsZero(v);
 
-        // True if `condition` being `whenTrue` means the divisor isn't 0.
-        bool RulesOutZero(IOperation condition, bool whenTrue) => condition switch
-        {
-            IUnaryOperation { OperatorKind: UnaryOperatorKind.Not } not => RulesOutZero(not.Operand, !whenTrue),
-            IBinaryOperation { OperatorKind: BinaryOperatorKind.ConditionalAnd } both when whenTrue =>
-                RulesOutZero(both.LeftOperand, true) || RulesOutZero(both.RightOperand, true),
-            IBinaryOperation { OperatorKind: BinaryOperatorKind.ConditionalOr } either when !whenTrue =>
-                RulesOutZero(either.LeftOperand, false) || RulesOutZero(either.RightOperand, false),
-            IBinaryOperation b when IsDivisor(b.LeftOperand) && IsZeroConstant(b.RightOperand)
-                                 || IsDivisor(b.RightOperand) && IsZeroConstant(b.LeftOperand) =>
-                b.OperatorKind == BinaryOperatorKind.NotEquals && whenTrue
+        bool Condition(IOperation condition, bool whenTrue) => condition is IBinaryOperation b
+            && (IsDivisor(b.LeftOperand) && IsZeroConstant(b.RightOperand) || IsDivisor(b.RightOperand) && IsZeroConstant(b.LeftOperand))
+            && (b.OperatorKind == BinaryOperatorKind.NotEquals && whenTrue
                 || b.OperatorKind == BinaryOperatorKind.Equals && !whenTrue
                 // `b > 0` (or `0 < b`) rules out 0 when true.
                 || b.OperatorKind == BinaryOperatorKind.GreaterThan && IsDivisor(b.LeftOperand) && whenTrue
-                || b.OperatorKind == BinaryOperatorKind.LessThan && IsDivisor(b.RightOperand) && whenTrue,
-            IIsPatternOperation pattern when IsDivisor(pattern.Value) => pattern.Pattern switch
-            {
-                INegatedPatternOperation { Pattern: IConstantPatternOperation c } when IsZeroConstant(c.Value) => whenTrue,
-                IConstantPatternOperation c when IsZeroConstant(c.Value) => !whenTrue,
-                IRelationalPatternOperation { OperatorKind: BinaryOperatorKind.GreaterThan } r when IsZeroConstant(r.Value) => whenTrue,
-                _ => false,
-            },
+                || b.OperatorKind == BinaryOperatorKind.LessThan && IsDivisor(b.RightOperand) && whenTrue);
+
+        // `b is not 0`, `b is > 0` (a negated pattern arrives here when the `is` is true).
+        bool Pattern(IPatternOperation pattern, ImmutableArray<string> names) => names.Contains(text) && pattern switch
+        {
+            INegatedPatternOperation { Pattern: IConstantPatternOperation c } => IsZeroConstant(c.Value),
+            IRelationalPatternOperation { OperatorKind: BinaryOperatorKind.GreaterThan } r => IsZeroConstant(r.Value),
             _ => false,
         };
 
-        var chain = Sequences.Unfold(op, o => o.Parent);
-        return chain.Zip(chain.Skip(1), (child, parent) => parent switch
-        {
-            IConditionalOperation c when c.WhenTrue == child => RulesOutZero(c.Condition, whenTrue: true),
-            IConditionalOperation c when c.WhenFalse == child => RulesOutZero(c.Condition, whenTrue: false),
-            IBinaryOperation { OperatorKind: BinaryOperatorKind.ConditionalAnd } b when b.RightOperand == child =>
-                RulesOutZero(b.LeftOperand, whenTrue: true),
-            IBinaryOperation { OperatorKind: BinaryOperatorKind.ConditionalOr } b when b.RightOperand == child =>
-                RulesOutZero(b.LeftOperand, whenTrue: false),
-            ISwitchExpressionArmOperation arm when arm.Value == child && arm.Guard is { } guard => RulesOutZero(guard, whenTrue: true),
-            _ => false,
-        }).Any(guarded => guarded);
+        return IsGuarded(op, new Check(Condition, Pattern));
     }
 
     // FP0021: hash order -------------------------------------------------------

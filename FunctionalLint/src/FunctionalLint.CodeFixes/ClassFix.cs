@@ -39,7 +39,7 @@ public sealed class ClassFix : CodeFixProvider
         if (type.DeclaringSyntaxReferences.Length != 1) return;
 
         var document = context.Document;
-        var diagnostic = context.Diagnostics[0];
+        if (context.Diagnostics is not [var diagnostic, ..]) return;
 
         if (CanBeStatic(type))
         {

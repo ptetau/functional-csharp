@@ -340,6 +340,8 @@ public sealed partial class FunctionalAnalyzer : DiagnosticAnalyzer
             start.RegisterOperationAction(GuardOp(AnalyzeMutatingCall), OperationKind.Invocation);
             start.RegisterOperationAction(GuardOp(AnalyzeThrowingCall), OperationKind.Invocation, OperationKind.PropertyReference);
             start.RegisterOperationAction(GuardOp(AnalyzeThrowingCast), OperationKind.Conversion);
+            start.RegisterOperationAction(GuardOp(AnalyzeIndexing), OperationKind.ArrayElementReference, OperationKind.PropertyReference, OperationKind.ImplicitIndexerReference);
+            start.RegisterOperationAction(GuardOp(AnalyzeDefaultImmutableArray), OperationKind.DefaultValue, OperationKind.ObjectCreation);
             start.RegisterOperationAction(GuardOp(AnalyzeDivision), OperationKind.Binary);
             start.RegisterOperationAction(GuardOp(AnalyzeHashOrder), OperationKind.Invocation);
             start.RegisterOperationAction(GuardOp(AnalyzeHashOrderedSpread), OperationKind.CollectionExpression);
@@ -574,7 +576,7 @@ public sealed partial class FunctionalAnalyzer : DiagnosticAnalyzer
         if (field.IsImplicitlyDeclared || field.IsConst || field.IsReadOnly) return;
 
         ctx.ReportDiagnostic(Diagnostic.Create(
-            NoMutableState, field.Locations[0], "Field", field.Name, "Mark it readonly."));
+            NoMutableState, Place(field), "Field", field.Name, "Mark it readonly."));
     }
 
     private static void AnalyzeProperty(SymbolAnalysisContext ctx)
@@ -588,7 +590,7 @@ public sealed partial class FunctionalAnalyzer : DiagnosticAnalyzer
 
         ctx.ReportDiagnostic(Diagnostic.Create(
             NoMutableState,
-            property.Locations[0],
+            Place(property),
             property.IsIndexer ? "Indexer" : "Property",
             property.IsIndexer ? "this[]" : property.Name,
             "Use 'init' instead of 'set', or make it get-only."));
@@ -599,13 +601,13 @@ public sealed partial class FunctionalAnalyzer : DiagnosticAnalyzer
     private static void AnalyzeType(SymbolAnalysisContext ctx)
     {
         if (ctx.Symbol is not INamedTypeSymbol type) return;
-        if (type.IsImplicitlyDeclared || type.Locations.Length == 0 || !type.Locations[0].IsInSource) return;
+        if (type.IsImplicitlyDeclared || !Place(type).IsInSource) return;
 
         // `record struct P(int X)` generates settable properties.
         if (type.TypeKind == TypeKind.Struct && type.IsRecord && !type.IsReadOnly)
         {
             ctx.ReportDiagnostic(Diagnostic.Create(
-                NoMutableState, type.Locations[0], "Record struct", type.Name,
+                NoMutableState, Place(type), "Record struct", type.Name,
                 "Declare it as 'readonly record struct'."));
             return;
         }
@@ -623,7 +625,7 @@ public sealed partial class FunctionalAnalyzer : DiagnosticAnalyzer
         if (type.BaseType is { IsAbstract: true, SpecialType: not SpecialType.System_Object } baseType
             && !baseType.Locations.Any(l => l.IsInSource)) return;
 
-        ctx.ReportDiagnostic(Diagnostic.Create(NoObjects, type.Locations[0], type.Name));
+        ctx.ReportDiagnostic(Diagnostic.Create(NoObjects, Place(type), type.Name));
     }
 
     private static bool InheritsFrom(INamedTypeSymbol type, string fullName) =>
@@ -783,7 +785,7 @@ public sealed partial class FunctionalAnalyzer : DiagnosticAnalyzer
     private static void AnalyzeAsyncVoidMethod(SymbolAnalysisContext ctx)
     {
         if (ctx.Symbol is IMethodSymbol { IsAsync: true, ReturnsVoid: true } method && !method.IsImplicitlyDeclared)
-            ctx.ReportDiagnostic(Diagnostic.Create(AsyncVoid, method.Locations[0], method.Name));
+            ctx.ReportDiagnostic(Diagnostic.Create(AsyncVoid, Place(method), method.Name));
     }
 
     private static void AnalyzeAsyncVoidFunction(OperationAnalysisContext ctx)
@@ -797,7 +799,7 @@ public sealed partial class FunctionalAnalyzer : DiagnosticAnalyzer
         if (method is not { IsAsync: true, ReturnsVoid: true }) return;
 
         var isLambda = method.MethodKind == MethodKind.AnonymousFunction;
-        var location = isLambda ? ctx.Operation.Syntax.GetFirstToken().GetLocation() : method.Locations[0];
+        var location = isLambda ? ctx.Operation.Syntax.GetFirstToken().GetLocation() : Place(method);
         ctx.ReportDiagnostic(Diagnostic.Create(AsyncVoid, location, isLambda ? "lambda" : method.Name));
     }
 
@@ -855,7 +857,7 @@ public sealed partial class FunctionalAnalyzer : DiagnosticAnalyzer
     // A union's case types: the types its one-parameter constructors take (`union Pet(Cat, Dog)` has Pet(Cat) and Pet(Dog)).
     private static ImmutableArray<ITypeSymbol> UnionCases(ITypeSymbol type) =>
         CheckedKind(type) == "union" && type is INamedTypeSymbol named
-            ? named.InstanceConstructors.Where(c => c.Parameters.Length == 1).Select(c => c.Parameters[0].Type).ToImmutableArray()
+            ? named.InstanceConstructors.Select(c => c.Parameters is [var only] ? only.Type : null).OfType<ITypeSymbol>().ToImmutableArray()
             : ImmutableArray<ITypeSymbol>.Empty;
 
     // `(object)shape switch { ... }` and `(int)colour switch { ... }` switch on a type the compiler can't check, so
@@ -886,7 +888,7 @@ public sealed partial class FunctionalAnalyzer : DiagnosticAnalyzer
 
     // `Colour?` is checked like `Colour`.
     private static ITypeSymbol Unwrapped(ITypeSymbol type) =>
-        type is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } nullable ? nullable.TypeArguments[0] : type;
+        type is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T, TypeArguments: [var inner] } ? inner : type;
 
     // Types whose switch expressions the compiler checks for missing cases, or null.
     private static string? CheckedKind(ITypeSymbol type) => Unwrapped(type) switch
@@ -947,7 +949,7 @@ public sealed partial class FunctionalAnalyzer : DiagnosticAnalyzer
                     or "System.Collections.Generic.IDictionary<TKey, TValue>");
             // Suggest a type the project can actually use; without one, the rule's docs show one to copy.
             var suggestion = (isMap ? valueTypes.Value.Map : valueTypes.Value.List) ?? "a [ValueEquality] collection";
-            return Diagnostic.Create(ReferenceEqualityInRecord, m.Symbol.Locations[0], Display(m.Type), type.Name, suggestion);
+            return Diagnostic.Create(ReferenceEqualityInRecord, Place(m.Symbol), Display(m.Type), type.Name, suggestion);
         });
         Effects.ReportAll(found, ctx.ReportDiagnostic);
     }
@@ -1053,28 +1055,12 @@ public sealed partial class FunctionalAnalyzer : DiagnosticAnalyzer
     // The dictionary and key are matched by their source text.
     private static bool IsGuardedByContainsKey(IOperation op, IOperation dictionary, IOperation key, bool keyPresent)
     {
-        bool Checks(IOperation condition, bool whenTrue) => condition switch
-        {
-            IUnaryOperation { OperatorKind: UnaryOperatorKind.Not } not => Checks(not.Operand, !whenTrue),
-            IInvocationOperation { TargetMethod.Name: "ContainsKey" } contains =>
-                whenTrue == keyPresent
-                && contains.Instance?.Syntax.ToString() == dictionary.Syntax.ToString()
-                && contains.Arguments.FirstOrDefault()?.Value.Syntax.ToString() == key.Syntax.ToString(),
-            _ => false,
-        };
+        bool Condition(IOperation condition, bool whenTrue) => condition is IInvocationOperation { TargetMethod.Name: "ContainsKey" } contains
+            && whenTrue == keyPresent
+            && contains.Instance?.Syntax.ToString() == dictionary.Syntax.ToString()
+            && contains.Arguments.FirstOrDefault()?.Value.Syntax.ToString() == key.Syntax.ToString();
 
-        // Each step up from the call: is this parent a guard, with the child on its guarded side?
-        var chain = Sequences.Unfold(op, o => o.Parent);
-        return chain.Zip(chain.Skip(1), (child, parent) => parent switch
-        {
-            IConditionalOperation c when c.WhenTrue == child => Checks(c.Condition, whenTrue: true),
-            IConditionalOperation c when c.WhenFalse == child => Checks(c.Condition, whenTrue: false),
-            IBinaryOperation { OperatorKind: BinaryOperatorKind.ConditionalAnd } b when b.RightOperand == child =>
-                Checks(b.LeftOperand, whenTrue: true),
-            IBinaryOperation { OperatorKind: BinaryOperatorKind.ConditionalOr } b when b.RightOperand == child =>
-                Checks(b.LeftOperand, whenTrue: false),
-            _ => false,
-        }).Any(guarded => guarded);
+        return IsGuarded(op, new Check(Condition, (_, _) => false));
     }
 
     // `xs.GroupBy(k).ToDictionary(g => g.Key, ...)` can't have duplicate keys, and `xs.DefaultIfEmpty(0).Max()`
@@ -1220,8 +1206,8 @@ public sealed partial class FunctionalAnalyzer : DiagnosticAnalyzer
         var isKeyLookup = op.Property.ContainingType.AllInterfaces.Concat([op.Property.ContainingType])
             .Where(i => i.OriginalDefinition.ToDisplayString() is "System.Collections.Generic.IReadOnlyDictionary<TKey, TValue>"
                 or "System.Collections.Generic.IDictionary<TKey, TValue>")
-            .Any(i => op.Property.Parameters.Length == 1
-                && SymbolEqualityComparer.Default.Equals(op.Property.Parameters[0].Type, i.TypeArguments[0]));
+            .Any(i => op.Property.Parameters is [var keyParameter] && i.TypeArguments is [var keyType, _]
+                && SymbolEqualityComparer.Default.Equals(keyParameter.Type, keyType));
         if (isKeyLookup && op.Instance is { } dictionary && op.Arguments.FirstOrDefault() is { } key
             && IsGuardedByContainsKey(op, dictionary, key.Value, keyPresent: true)) return default;
 
@@ -1673,6 +1659,9 @@ public sealed partial class FunctionalAnalyzer : DiagnosticAnalyzer
     private static IEnumerable<IOperation> Parents(IOperation op) => Sequences.Unfold(op.Parent, o => o.Parent);
 
     // The operation under any conversions.
+    // Where a symbol is declared, for reporting on it: its first location, or none.
+    private static Location Place(ISymbol symbol) => symbol.Locations is [var first, ..] ? first : Location.None;
+
     private static IOperation? Unwrapped(IOperation? op) => op is IConversionOperation conversion ? Unwrapped(conversion.Operand) : op;
 
     // The member an operation uses, and the type that owns it.
@@ -1693,13 +1682,13 @@ public sealed partial class FunctionalAnalyzer : DiagnosticAnalyzer
     {
         IMethodSymbol method when method.MethodKind is MethodKind.Ordinary or MethodKind.Constructor
                                   or MethodKind.UserDefinedOperator or MethodKind.Conversion =>
-            (method.ReturnsVoid ? [] : new[] { (method.ReturnType, method.Locations[0]) })
+            (method.ReturnsVoid ? [] : new[] { (method.ReturnType, Place(method)) })
                 .Concat(method.Parameters.Where(p => !IsRecordPropertyParameter(method, p))
-                    .Select(p => (p.Type, p.Locations.FirstOrDefault() ?? method.Locations[0]))),
+                    .Select(p => (p.Type, p.Locations.FirstOrDefault() ?? Place(method)))),
         IPropertySymbol property =>
-            new[] { (property.Type, property.Locations[0]) }
-                .Concat(property.Parameters.Select(p => (p.Type, p.Locations.FirstOrDefault() ?? property.Locations[0]))),
-        IFieldSymbol field => [(field.Type, field.Locations[0])],
+            new[] { (property.Type, Place(property)) }
+                .Concat(property.Parameters.Select(p => (p.Type, p.Locations.FirstOrDefault() ?? Place(property)))),
+        IFieldSymbol field => [(field.Type, Place(field))],
         _ => [],
     };
 
