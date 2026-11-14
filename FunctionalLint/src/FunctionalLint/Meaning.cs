@@ -26,8 +26,9 @@ public sealed partial class FunctionalAnalyzer
         "'{0}' compares floating-point numbers exactly. {1}.",
         "Rounding makes floating-point results that should be equal differ slightly: 0.1 + 0.2 != 0.3. Comparing two " +
         "computed values with == or != then depends on the order of the arithmetic. Compare within a tolerance " +
-        "instead, or use decimal for amounts that must be exact. Comparing with a constant (x == 0, x != 1) is " +
-        "allowed: it tests for a value that was set, not computed. NaN never equals anything, so use double.IsNaN.");
+        "instead, or use decimal for amounts that must be exact. Comparing with a whole-number constant (x == 0, " +
+        "x != 1) is allowed: it tests for a value that was set, not computed, and it's exact. A fraction such as 0.1 " +
+        "isn't exact in binary, so it's reported. NaN never equals anything, so use double.IsNaN.");
 
     // FP0022: exact floating-point comparison ---------------------------------
 
@@ -36,13 +37,20 @@ public sealed partial class FunctionalAnalyzer
         if (ctx.Operation is not IBinaryOperation { OperatorKind: BinaryOperatorKind.Equals or BinaryOperatorKind.NotEquals } op) return;
         if (!IsFloatingPoint(op.LeftOperand.Type) || !IsFloatingPoint(op.RightOperand.Type)) return;
 
-        var constants = new[] { op.LeftOperand, op.RightOperand }.Select(o => o.ConstantValue).Where(c => c.HasValue).ToImmutableArray();
-        var advice = constants.Any(c => c.Value is double.NaN or float.NaN)
+        var constants = new[] { op.LeftOperand, op.RightOperand }
+            .Select(o => o.ConstantValue)
+            .Where(c => c.HasValue)
+            .Select(c => c.Value is IConvertible v ? v.ToDouble(System.Globalization.CultureInfo.InvariantCulture) : double.NaN)
+            .ToImmutableArray();
+        var advice = constants.Any(double.IsNaN)
             ? "Use double.IsNaN: NaN never equals anything"
-            : constants.IsEmpty ? "Use a tolerance: Math.Abs(a - b) < 1e-9" : null;
+            : !constants.Any(IsWholeNumber) ? "Use a tolerance: Math.Abs(a - b) < 1e-9" : null;
         if (advice is null) return;
         Report(ctx, ExactFloatComparison, op.Syntax, Short(op.Syntax.ToString()), advice);
     }
+
+    // 0, 1, -3: exact in binary. Rounding a whole number gives it back exactly, so the difference is 0.
+    private static bool IsWholeNumber(double value) => Math.Abs(value - Math.Round(value)) < double.Epsilon;
 
     private static bool IsFloatingPoint(ITypeSymbol? type) =>
         type?.SpecialType is SpecialType.System_Single or SpecialType.System_Double || type?.ToDisplayString() == "System.Half";

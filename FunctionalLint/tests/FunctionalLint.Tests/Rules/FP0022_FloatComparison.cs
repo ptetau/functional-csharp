@@ -14,6 +14,8 @@ public class FP0022_FloatComparison
             public static bool Differs(float a, float b) => {|FP0022:a != b|};
             public static bool Sum(double a) => {|FP0022:a + 0.1 == a * 2|};
             public static bool Missing(double a) => {|FP0022:a == double.NaN|};
+            public static bool Fraction(double a) => {|FP0022:a == 0.1 + 0.2|};
+            public static bool Half(float a) => {|FP0022:a != 0.5f|};
         }
         """);
 
@@ -23,6 +25,7 @@ public class FP0022_FloatComparison
         {
             public static bool Zero(double a) => a == 0;
             public static bool One(float a) => a != 1f;
+            public static bool Minus(double a) => a == -3.0;
             public static bool Close(double a, double b) => System.Math.Abs(a - b) < 1e-9;
             public static bool Ints(int a, int b) => a == b;
             public static bool Money(decimal a, decimal b) => a == b;

@@ -27,7 +27,7 @@ A Roslyn analyzer that keeps a C# project functional. It reports errors at build
 | [FP0019](docs/rules/FP0019.md) | Any syntax outside the subset in `Subset.cs`: `lock`, `try`, `using`, events, `unsafe`, `ref`/`out`, `async`, `checked`, `!`, `dynamic`, `object`, `virtual`/`abstract`, deriving from a record that isn't `closed`... and anything a future C# adds | The subset's features: records, expressions, patterns, LINQ | |
 | [FP0020](docs/rules/FP0020.md) | Any part of .NET outside the subset in `ApiSubset.cs`: threads, `GC`, interop, reflection, hash codes, enumerators... | LINQ, immutable collections, strings, numbers, dates; the rest in a shell project | |
 | [FP0021](docs/rules/FP0021.md) | Showing a hash set's or dictionary's order: `string.Join(", ", set)`, `set.ToImmutableArray()`, `set.First()` | `Order()` / `OrderBy(...)` first, or a sorted collection | |
-| [FP0022](docs/rules/FP0022.md) | Comparing computed floating-point numbers with `==` or `!=`, and `x == double.NaN` | A tolerance: `Math.Abs(a - b) < 1e-9`; `decimal` for exact amounts; `double.IsNaN` | |
+| [FP0022](docs/rules/FP0022.md) | Comparing floating-point numbers with `==` or `!=` (except against a whole number), and `x == double.NaN` | A tolerance: `Math.Abs(a - b) < 1e-9`; `decimal` for exact amounts; `double.IsNaN` | |
 
 Each rule's page has a before/after example. The build output links to it.
 
