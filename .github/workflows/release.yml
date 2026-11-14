@@ -1,0 +1,78 @@
+name: Release
+
+# Publishes the FunctionalLint NuGet package when a version tag is pushed:
+#
+#   git tag v0.4.0 && git push origin v0.4.0
+#
+# The tag sets the package version. It needs a repository secret NUGET_API_KEY (a nuget.org API key with push
+# rights for FunctionalLint). The package is also attached to a GitHub release for the tag.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write   # to create the GitHub release
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DOTNET_NOLOGO: "1"
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      FUNCTIONALLINT_NO_SERVER: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Version from the tag
+        id: version
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Tag '$GITHUB_REF_NAME' isn't a version like v1.2.3 or v1.2.3-beta.1."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Check the API key is set
+        shell: bash
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: |
+          if [[ -z "$NUGET_API_KEY" ]]; then
+            echo "::error::Add a repository secret NUGET_API_KEY (Settings, Secrets and variables, Actions) to publish."
+            exit 1
+          fi
+
+      # The same checks as CI, so a tag on an unchecked commit can't publish.
+      - name: Linter tests
+        run: dotnet test FunctionalLint
+      - name: Sample app and library tests
+        run: dotnet test samples/Samples.slnx
+      - name: Gate every functional core
+        shell: bash
+        run: |
+          FunctionalLint/heal.sh samples/Samples.slnx --check
+          FunctionalLint/heal.sh FunctionalLint/FunctionalLint.slnx --check
+
+      - name: Pack
+        run: dotnet pack FunctionalLint/src/FunctionalLint.Package -c Release -o artifacts -p:Version=${{ steps.version.outputs.version }}
+
+      - name: Publish to nuget.org
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: dotnet nuget push "artifacts/*.nupkg" --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate
+
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" artifacts/*.nupkg --title "FunctionalLint ${{ steps.version.outputs.version }}" --generate-notes

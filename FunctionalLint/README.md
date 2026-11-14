@@ -87,6 +87,8 @@ To share the linter across repositories, build the package:
 dotnet pack src/FunctionalLint.Package -c Release -o artifacts
 ```
 
+Or publish a release: push a tag such as `v0.4.0` and [`.github/workflows/release.yml`](../.github/workflows/release.yml) runs the tests and the gate, packs that version, pushes it to nuget.org and attaches it to a GitHub release. It needs a repository secret `NUGET_API_KEY`.
+
 Push it to your feed, then reference it from each functional core project:
 
 ```xml
